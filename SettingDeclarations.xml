@@ -1,0 +1,50 @@
+<?xml version="1.0"?>
+<!--
+******************************************************************************
+ File:        Health Check Tool valid settings
+
+ Purpose:     Contains application setting definitions.
+
+******************************************************************************
+-->
+
+<settings>
+  <setting name="Workstations" type="Boolean" />
+  <setting name="Servers" type="Boolean" />
+  <setting name="DCs" type="Boolean" />
+  <setting name="AutoRebootIsAllowed" type="Boolean" />
+  <setting name="AutoRebootIsAllowedForServers" type="Boolean" />
+  <setting name="AutoRebootTool" type="String" />
+  <setting name="AutoRebootToolCommandline" type="String" />
+  <setting name="ConfigFile" type="String" />
+  <setting name="Debug" type="Boolean" />
+  <setting name="DeleteOldLogFiles" type="Boolean" />
+  <setting name="DeleteOldPatchFiles" type="Boolean" />
+  <setting name="DeleteOldTempFiles" type="Boolean" />
+  <setting name="DriveMinSpaceFree" type="Numeric" />
+  <setting name="EnvironmentCheck" type="Boolean" />
+  <setting name="EnvironmentRepair" type="Boolean" />
+  <setting name="HealthyMinTimeBetweenRerun" type="Numeric" />
+  <setting name="HealthyRerunInterval" type="String" />
+  <setting name="IgnoreMinTimeBetweenRerun" type="Boolean" />
+  <setting name="LoggingIsVerbose" type="Boolean" />
+  <setting name="LogSizeMax" type="Numeric" />
+  <setting name="LogFileMaxDays" type="Numeric" />
+  <setting name="PatchFolderMaxDays" type="Numeric" />
+  <setting name="RegistryCheck" type="Boolean" />
+  <setting name="ReportStatus" type="Boolean" />
+  <setting name="ReportStatusError" type="Boolean" />
+  <setting name="ReportStatusInfo" type="Boolean" />
+  <setting name="ReportStatusHealthy" type="Boolean" />
+  <setting name="ServiceCheck" type="Boolean" />
+  <setting name="ServiceRepair" type="Boolean" />
+  <setting name="ShareCheck" type="Boolean" />
+  <setting name="ShareRepair" type="Boolean" />
+  <setting name="SystemNameMaxLength" type="Numeric" />
+  <setting name="TempFileMaxDays" type="Numeric" />
+  <setting name="UnhealthyRerunInterval" type="String" />
+  <setting name="UnhealthyMinTimeBetweenRerun" type="Numeric" />
+  <setting name="WmiRebuild" type="Boolean" />
+  <setting name="WmiRepair" type="Boolean" />
+  <setting name="WriteToEventlog" type="Boolean" />
+</settings>

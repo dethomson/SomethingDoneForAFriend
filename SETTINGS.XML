@@ -1,0 +1,783 @@
+<?xml version="1.0"?>
+<!--
+******************************************************************************
+ File:        Health Check Tool settings
+
+ Purpose:     Contains application settings.
+
+ Notes:
+              The script currently does not account for DelayedStart services.
+
+******************************************************************************
+-->
+<configuration>
+  <application_settings>
+    <SupportedOperatingSystems>
+      <!-- A list of operating systems that this script is supported to run on.
+           Each entry in this list must have a corresponding operating system 
+           section in the system_settings and system_repairs sections.
+           When the script is initializing, it reads the ProductName registry
+           value from HKLM\Software\Microsoft\Windows NT\CurrentVersion to
+           and tests to see if it contains any entry listed below.
+           
+           For example: If the ProductName equals 'Microsoft Windows XP' and a
+           'Windows XP' SupportedOperatingSystem entry exists, the script will
+           determine that the system is supported.  The script will then look
+           for a 'Windows XP' settings block in the system_settings and
+           system_repairs sections.
+           -->
+      <SupportedOperatingSystem name="Windows XP" />
+      <SupportedOperatingSystem name="Windows Vista" />
+      <SupportedOperatingSystem name="Windows 7" />
+      <SupportedOperatingSystem name="Windows Server 2003" />
+      <SupportedOperatingSystem name="Windows Server 2008" />
+    </SupportedOperatingSystems>
+    
+    <setting name="Workstations" value="True" />
+        <!-- Allow running on workstations -->
+    <setting name="Servers" value="False" />
+        <!-- Allow running on servers -->
+    <setting name="DCs" value="False" />
+        <!-- Allow running on domain controllers -->
+    
+    <!-- LoggingAndReportingOptions -->
+    <setting name="LogSizeMax" value="3" />
+        <!-- The maximum size of the log file. This value is specified in MB -->
+    <setting name="LoggingIsVerbose" value="True" />
+        <!-- Specifies whether or not to write all status messages to the log file.
+             Value is True or False -->
+    <setting name="WriteToEventLog" value="True" />
+        <!-- Should script starts, stops, and errors be written to the Event Log?
+             Value is True or False -->
+    <setting name="ReportStatus" value="True" />
+        <!-- Should the status report be sent to the central reporting server?
+             If set to False, this setting overrides the ReportWhenErrors,
+             ReportWhenInfo, and ReportWhenHealthy settings.
+             Value is True or False -->
+    <setting name="ReportStatusError" value="True" />
+        <!-- Should the status report being sent to the central reporting server
+             include errors?
+             Value is True or False -->
+    <setting name="ReportStatusInfo" value="True" />
+        <!-- Should the status report being sent to the central reporting server
+             include informational errors?
+             Value is True or False -->
+    <setting name="ReportStatusHealthy" value="True" />
+        <!-- Should the status report be sent to the central reporting server when 
+             no errors were found?
+             Value is True or False -->
+    
+    <!-- RerunOptions -->
+    <setting name="HealthyReRunInterval" value="Daily" />
+        <!-- When a scheduled task is created, and the tool did not find any issues,
+             it should be set to run the tool at this interval.
+             Value is Daily, Weekly, Monthly -->
+    <setting name="UnHealthyReRunInterval" value="Hourly" />
+        <!-- When a scheduled task is created, and the tool found issues, it should
+             be set to run the tool at this interval.
+             Value is Hourly, Daily, Weekly, Monthly -->
+    <setting name="HealthyMinTimeBetweenReRun" value="1" />
+        <!-- If the last running of the tool completed without finding any issues,
+             this amount of time must pass before the tool will run again.
+             If HealthyReRunInterval is Daily, this is the number of days between runs
+             If HealthyReRunInterval is Weekly, this is the number of weeks between runs
+             If HealthyReRunInterval is Monthly, this is the number of months between runs
+              -->
+    <setting name="UnHealthyMinTimeBetweenReRun" value="6" />
+        <!-- If the last running of the tool completed with issues being found,
+             this amount of time must pass before the tool will run again.
+             If UnHealthyReRunInterval is Hourly, this is the number of hours between runs
+             If UnHealthyReRunInterval is Daily, this is the number of days between runs
+             If UnHealthyReRunInterval is Weekly, this is the number of weeks between runs
+             If UnHealthyReRunInterval is Monthly, this is the number of months between runs
+              -->
+    <setting name="IgnoreMinTimeBetweenReRun" value="False" />
+        <!-- Ignore the minimum time limits between re-running the tool.
+             Value is True or False -->
+    
+  </application_settings>
+  
+  
+  <system_settings>
+    <common>
+      <setting name="AutoRebootIsAllowed" value="False" />
+          <!-- Allow the system to be automatically rebooted if it needs to be.
+               This reboot will only happen if: A) no-one is logged on, B) no-one has any
+               files open via remote connection, C) the system reports via WUA and 
+               PendingFileRenameOperations that it is needing to be rebooted.
+               Value is True or False -->
+      <setting name="AutoRebootTool" value="" />
+          <!-- The exe to be used for rebooting the system. Leaving this value blank, will
+               set the script to use the builtin shutdown.exe tool. If your organization
+               uses a third party tool, specify it's exe name here. If the
+               tool's exe is not found within a folder specified in the system's Path
+               variable, you should also provide the full path to the exe.
+               Value is a string -->
+      <setting name="AutoRebootToolCommandLine" value="" />
+          <!-- If using a third party shutdown tool, provide the command line that
+               should be used to reboot the computer.
+               Value is a string -->
+      <setting name="DriveMinSpaceFree" value="2500" />
+          <!-- The minimum amount of desired drive freespace. This value is
+               specified in MB -->
+      <setting name="EnvironmentCheck" value="True" />
+          <!-- Should the Environment get checked?
+               Value is True or False -->
+      <setting name="LogFileMaxDays" value="180" />
+          <!-- The maximum number of days to keep old log files.
+               This value is specified as number of days. -->
+      <setting name="PatchFolderMaxDays" value="180"/>
+          <!-- The maximum number of days to keep old patch uninstall folders.
+               Value is numeric -->
+      <setting name="ShareCheck" value="True"/>
+          <!-- Should the listed share configurations get checked?
+               Value is True or False -->
+      <setting name="SystemNameMaxLength" value="15" />
+          <!-- The maximum length the system's name can be.
+               Value is numeric -->
+      <setting name="TempFileMaxDays" value="180" />
+          <!-- The maximum numbers of days to keep old files in the %WinDir%\Temp folder.
+               Value is numeric -->
+      
+      <services>
+        <!-- Note: The script currently does not account for DelayedStart services. -->
+        <service
+          friendlyname="Windows Installer"
+          name="MSIServer"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_DEMAND"
+          Delayed="False"
+          State="ADS_Svc_Running,ADS_Svc_Stopped"
+          LogonAccount="LocalSystem"
+          SecurityDescriptor=""
+          Order="000"
+          />
+        <service
+          friendlyname="Windows Management Instrumentation"
+          name="Winmgmt"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_AUTO"
+          State="ADS_Svc_Running"
+          LogonAccount="LocalSystem"
+          SecurityDescriptor=""
+          Order="000"
+          />
+        <service
+          friendlyname="Server"
+          name="lanmanserver"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_AUTO"
+          State="ADS_Svc_Running"
+          LogonAccount="LocalSystem"
+          SecurityDescriptor=""
+          Order="001"
+          />
+        <service
+          friendlyname="Netlogon"
+          name="Netlogon"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_AUTO"
+          State="ADS_Svc_Running"
+          LogonAccount="LocalSystem"
+          SecurityDescriptor=""
+          Order="003"
+          />
+        <service
+          friendlyname="Remote Procedure Call (RPC)"
+          name="RpcSs"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_AUTO"
+          State="ADS_Svc_Running"
+          LogonAccount="NT AUTHORITY\NetworkService"
+          SecurityDescriptor=""
+          Order="004"
+          />
+        <service
+          friendlyname="Internet Connection Sharing (ICS)"
+          name="SharedAccess"
+          AutoRepair="True"
+          StartMode="ADS_SVC_DISABLED"
+          State="ADS_Svc_Stopped"
+          LogonAccount="LocalSystem"
+          SecurityDescriptor=""
+          Order="007"
+          />
+        <service
+          friendlyname="TCP/IP NetBIOS Helper"
+          name="LMHosts"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_AUTO"
+          State="ADS_Svc_Running"
+          LogonAccount="NT AUTHORITY\LocalService"
+          SecurityDescriptor=""
+          Order="009"
+          />
+      </services>
+      
+      <shares/>
+      
+      <registry>
+        <ValueCheck Key="HKLM\SOFTWARE\Microsoft\Ole" ValueName="EnableDCOM" ValueExpected="Y" Enforce="True" Type="REG_SZ"/>
+        <ValueCheck Key="HKLM\SOFTWARE\Microsoft\Ole" ValueName="EnableRemoteConnect" ValueExpected="Y" Enforce="False" Type="REG_SZ"/>
+        <ValueCheck Key="HKLM\SOFTWARE\Microsoft\Ole" ValueName="LegacyAuthenticationLevel" ValueExpected="2" Enforce="False" Type="REG_DWORD"/>
+        <ValueCheck Key="HKLM\SOFTWARE\Microsoft\Ole" ValueName="LegacyImpersonationLevel" ValueExpected="2" Enforce="False" Type="REG_DWORD"/>
+      </registry>
+    </common>
+    
+    <operating_system name="Windows XP">
+      <!-- Microsoft Windows XP -->
+      <setting name="RegistryCheck" value="False" />
+          <!-- Should the listed registry entries get checked?
+               Value is True or False -->
+      <setting name="ServiceCheck" value="True" />
+          <!-- Should the listed services get checked?
+               Value is True or False -->
+      
+      <services>
+        <!-- Note: The script currently does not account for DelayedStart services. -->
+        <service
+          friendlyname="Background Intelligent Transfer Service"
+          name="BITS"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_DEMAND"
+          Delayed="False"
+          State="ADS_Svc_Running,ADS_Svc_Stopped"
+          LogonAccount="LocalSystem"
+          SecurityDescriptor=""
+          Order="000"
+          />
+        <service
+          friendlyname="Windows Update"
+          name="wuauserv"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_AUTO"
+          Delayed="False"
+          State="ADS_Svc_Running"
+          LogonAccount="LocalSystem"
+          SecurityDescriptor=""
+          Order="000"
+          />
+        <service
+          friendlyname="Workstation"
+          name="lanmanworkstation"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_AUTO"
+          Delayed="False"
+          State="ADS_Svc_Running"
+          LogonAccount="LocalSystem"
+          SecurityDescriptor=""
+          Order="002"
+          />
+        <service
+          friendlyname="Cryptographic Services"
+          name="CryptSvc"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_AUTO"
+          Delayed="False"
+          State="ADS_Svc_Running"
+          LogonAccount="LocalSystem"
+          SecurityDescriptor=""
+          Order="005"
+          />
+        <service
+          friendlyname="Protected Storage"
+          name="ProtectedStorage"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_AUTO"
+          Delayed="False"
+          State="ADS_Svc_Running"
+          LogonAccount="LocalSystem"
+          SecurityDescriptor=""
+          Order="006"
+          />
+        <service
+          friendlyname="IPsec Policy Agent"
+          name="PolicyAgent"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_AUTO"
+          Delayed="False"
+          State="ADS_Svc_Running"
+          LogonAccount="LocalSystem"
+          SecurityDescriptor=""
+          Order="008"
+          />
+        <service
+          friendlyname="Remote Registry"
+          name="RemoteRegistry"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_AUTO"
+          Delayed="False"
+          State="ADS_Svc_Running"
+          LogonAccount="NT AUTHORITY\LocalService"
+          SecurityDescriptor=""
+          Order="010"
+          />
+      </services>
+      
+      <shares/>
+      
+      <registry/>
+      
+    </operating_system>
+    
+    <operating_system name="Windows Vista">
+      <setting name="RegistryCheck" value="False" />
+          <!-- Should the listed registry entries get checked? Value is True or False -->
+      <setting name="ServiceCheck" value="True" />
+          <!-- Should the listed services get checked? Value is True or False -->
+      
+      <services>
+        <!-- Note: The script currently does not account for DelayedStart services. -->
+        <service
+          friendlyname="Background Intelligent Transfer Service"
+          name="BITS"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_DEMAND"
+          Delayed="False"
+          State="ADS_Svc_Running,ADS_Svc_Stopped"
+          LogonAccount="LocalSystem"
+          SecurityDescriptor=""
+          Order="000"
+          />
+        <service
+          friendlyname="Windows Update"
+          name="wuauserv"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_AUTO"
+          Delayed="False"
+          State="ADS_Svc_Running"
+          LogonAccount="LocalSystem"
+          SecurityDescriptor=""
+          Order="000"
+          />
+        <service
+          friendlyname="Workstation"
+          name="lanmanworkstation"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_AUTO"
+          Delayed="False"
+          State="ADS_Svc_Running"
+          LogonAccount="NT AUTHORITY\LocalService"
+          SecurityDescriptor=""
+          Order="002"
+          />
+        <service
+          friendlyname="Cryptographic Services"
+          name="CryptSvc"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_AUTO"
+          Delayed="False"
+          State="ADS_Svc_Running"
+          LogonAccount="NT AUTHORITY\NetworkService"
+          SecurityDescriptor=""
+          Order="005"
+          />
+        <service
+          friendlyname="Protected Storage"
+          name="ProtectedStorage"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_DEMAND"
+          Delayed="False"
+          State="ADS_Svc_Running,ADS_Svc_Stopped"
+          LogonAccount="LocalSystem"
+          SecurityDescriptor=""
+          Order="006"
+          />
+        <service
+          friendlyname="IPsec Policy Agent"
+          name="PolicyAgent"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_AUTO"
+          Delayed="False"
+          State="ADS_Svc_Running"
+          LogonAccount="NT AUTHORITY\NetworkService"
+          SecurityDescriptor=""
+          Order="008"
+          />
+        <service
+          friendlyname="Remote Registry"
+          name="RemoteRegistry"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_DEMAND"
+          Delayed="False"
+          State="ADS_Svc_Running,ADS_Svc_Stopped"
+          LogonAccount="NT AUTHORITY\LocalService"
+          SecurityDescriptor=""
+          Order="010"
+          />
+      </services>
+      
+      <shares/>
+      
+      <registry/>
+      
+    </operating_system>
+    
+    <operating_system name="Windows 7">
+      <setting name="RegistryCheck" value="False" />
+          <!-- Should the listed registry entries get checked? Value is True or False -->
+      <setting name="ServiceCheck" value="True" />
+          <!-- Should the listed services below get checked? Value is True or False -->
+      
+      <services>
+        <!-- Note: The script currently does not account for DelayedStart services. -->
+        <service
+          friendlyname="Background Intelligent Transfer Service"
+          name="BITS"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_DEMAND"
+          Delayed="False"
+          State="ADS_Svc_Running,ADS_Svc_Stopped"
+          LogonAccount="LocalSystem"
+          SecurityDescriptor="D:(A;CI;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)S:(AU;SAFA;WDWO;;;BA)"
+          Order="000"
+            />
+        <service
+          friendlyname="Windows Update"
+          name="wuauserv"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_AUTO"
+          Delayed="True"
+          State="ADS_Svc_Running"
+          LogonAccount="LocalSystem"
+          SecurityDescriptor="D:(A;;CCLCSWRPLORC;;;AU)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;SY)S:(AU;FA;CCDCLCSWRPWPDTLOSDRCWDWO;;;WD)"
+          Order="000"
+          />
+        <service
+          friendlyname="Workstation"
+          name="lanmanworkstation"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_AUTO"
+          Delayed="False"
+          State="ADS_Svc_Running"
+          LogonAccount="NT AUTHORITY\NetworkService"
+          SecurityDescriptor=""
+          Order="002"
+          />
+        <service
+          friendlyname="Cryptographic Services"
+          name="CryptSvc"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_AUTO"
+          Delayed="False"
+          State="ADS_Svc_Running"
+          LogonAccount="NT AUTHORITY\NetworkService"
+          SecurityDescriptor=""
+          Order="005"
+          />
+        <service
+          friendlyname="Protected Storage"
+          name="ProtectedStorage"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_DEMAND"
+          Delayed="False"
+          State="ADS_Svc_Running,ADS_Svc_Stopped"
+          LogonAccount="LocalSystem"
+          SecurityDescriptor=""
+          Order="006"
+          />
+        <service
+          friendlyname="IPsec Policy Agent"
+          name="PolicyAgent"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_DEMAND"
+          Delayed="False"
+          State="ADS_Svc_Running,ADS_Svc_Stopped"
+          LogonAccount="NT AUTHORITY\NetworkService"
+          SecurityDescriptor=""
+          Order="008"
+          />
+        <service
+          friendlyname="Remote Registry"
+          name="RemoteRegistry"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_DEMAND"
+          Delayed="False"
+          State="ADS_Svc_Running,ADS_Svc_Stopped"
+          LogonAccount="NT AUTHORITY\LocalService"
+          SecurityDescriptor=""
+          Order="010"
+          />
+      </services>
+      
+      <shares/>
+
+      <registry/>
+      
+    </operating_system>
+    
+    <operating_system name="Windows Server 2003">
+      <setting name="RegistryCheck" value="False" />
+          <!-- Should the listed registry entries get checked? Value is True or False -->
+      <setting name="ServiceCheck" value="True" />
+          <!-- Should the listed services below get checked? Value is True or False -->
+      
+      <services>
+        <!-- Note: The script currently does not account for DelayedStart services. -->
+        <!-- delayed start -->
+        <service
+          friendlyname="Background Intelligent Transfer Service"
+          name="BITS"
+          AutoRepair="False"
+          StartMode="ADS_SVC_START_AUTO"
+          Delayed="False"
+          State="ADS_Svc_Running"
+          LogonAccount="LocalSystem"
+          SecurityDescriptor=""
+          Order="000"
+            />
+        <!-- delayed start -->
+        <service
+          friendlyname="Windows Update"
+          name="wuauserv"
+          AutoRepair="False"
+          StartMode="ADS_SVC_START_AUTO"
+          Delayed="False"
+          State="ADS_Svc_Running"
+          LogonAccount="LocalSystem"
+          SecurityDescriptor=""
+          Order="000"
+          />
+        <service
+          friendlyname="Workstation"
+          name="lanmanworkstation"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_AUTO"
+          Delayed="False"
+          State="ADS_Svc_Running"
+          LogonAccount="LocalSystem"
+          SecurityDescriptor=""
+          Order="002"
+          />
+        <service
+          friendlyname="Cryptographic Services"
+          name="CryptSvc"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_AUTO"
+          Delayed="False"
+          State="ADS_Svc_Running"
+          LogonAccount="LocalSystem"
+          SecurityDescriptor=""
+          Order="005"
+          />
+        <service
+          friendlyname="Protected Storage"
+          name="ProtectedStorage"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_AUTO"
+          Delayed="False"
+          State="ADS_Svc_Running"
+          LogonAccount="LocalSystem"
+          SecurityDescriptor=""
+          Order="006"
+          />
+        <service
+          friendlyname="IPsec Policy Agent"
+          name="PolicyAgent"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_AUTO"
+          Delayed="False"
+          State="ADS_Svc_Running"
+          LogonAccount="LocalSystem"
+          SecurityDescriptor=""
+          Order="008"
+          />
+        <service
+          friendlyname="Remote Registry"
+          name="RemoteRegistry"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_AUTO"
+          Delayed="False"
+          State="ADS_Svc_Running"
+          LogonAccount="NT AUTHORITY\LocalService"
+          SecurityDescriptor=""
+          Order="010"
+          />
+      </services>
+      
+      <shares/>
+
+      <registry/>
+      
+    </operating_system>
+    
+    <operating_system name="Windows Server 2008">
+      <!-- Windows Server (R) 2008 Enterprise -->
+      <setting name="RegistryCheck" value="False" />
+          <!-- Should the listed registry entries get checked? Value is True or False -->
+      <setting name="ServiceCheck" value="True" />
+          <!-- Should the listed services below get checked? Value is True or False -->
+      
+      <services>
+        <!-- Note: The script currently does not account for DelayedStart services. -->
+        <service
+          friendlyname="Background Intelligent Transfer Service"
+          name="BITS"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_AUTO"
+          Delayed="True"
+          State="ADS_Svc_Running"
+          LogonAccount="LocalSystem"
+          SecurityDescriptor="D:(A;CI;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)S:(AU;SAFA;WDWO;;;BA)"
+          Order="000"
+            />
+        <service
+          friendlyname="Windows Update"
+          name="wuauserv"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_AUTO"
+          Delayed="True"
+          State="ADS_Svc_Running"
+          LogonAccount="LocalSystem"
+          SecurityDescriptor="D:(A;;CCLCSWRPLORC;;;AU)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;SY)S:(AU;FA;CCDCLCSWRPWPDTLOSDRCWDWO;;;WD)"
+          Order="000"
+          />
+        <service
+          friendlyname="Workstation"
+          name="lanmanworkstation"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_AUTO"
+          Delayed="False"
+          State="ADS_Svc_Running"
+          LogonAccount="NT AUTHORITY\LocalService"
+          SecurityDescriptor=""
+          Order="002"
+          />
+        <service
+          friendlyname="Cryptographic Services"
+          name="CryptSvc"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_AUTO"
+          Delayed="False"
+          State="ADS_Svc_Running"
+          LogonAccount="NT AUTHORITY\NetworkService"
+          SecurityDescriptor=""
+          Order="005"
+          />
+        <service
+          friendlyname="Protected Storage"
+          name="ProtectedStorage"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_AUTO"
+          Delayed="False"
+          State="ADS_Svc_Running"
+          LogonAccount="LocalSystem"
+          SecurityDescriptor=""
+          Order="006"
+          />
+        <service
+          friendlyname="IPsec Policy Agent"
+          name="PolicyAgent"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_AUTO"
+          Delayed="False"
+          State="ADS_Svc_Running"
+          LogonAccount="NT AUTHORITY\NetworkService"
+          SecurityDescriptor=""
+          Order="008"
+          />
+        <service
+          friendlyname="Remote Registry"
+          name="RemoteRegistry"
+          AutoRepair="True"
+          StartMode="ADS_SVC_START_AUTO"
+          Delayed="False"
+          State="ADS_Svc_Running"
+          LogonAccount="NT AUTHORITY\LocalService"
+          SecurityDescriptor=""
+          Order="010"
+          />
+      </services>
+      
+      <shares/>
+
+      <registry/>
+      
+    </operating_system>
+  </system_settings>
+  
+  
+  <system_repairs>
+    <common>
+      <setting name="DeleteOldPatchFiles" value="True"/>
+          <!-- Should old patch uninstall files and folders be deleted from %WinDir%
+               if the drive free space is less than DriveMinSpaceFree?
+               This is only supported on Windows XP and Server 2003.
+               Value is True or False -->
+      <setting name="DeleteOldTempFiles" value="True"/>
+          <!-- Should old Temp files and folders be deleted from %WinDir%\Temp
+               if the drive free space is less than DriveMinSpaceFree?
+               Value is True or False -->
+      <setting name="DeleteOldLogFiles" value="False"/>
+          <!-- Should old log files and folders be deleted from %WinDir%\System32\LogFiles
+               if the drive free space is less than DriveMinSpaceFree?
+               Value is True or False -->
+    </common>
+    
+    <operating_system name="Windows XP">
+      <setting name="WMIRebuild" value="True" />
+          <!-- Should WMI be rebuilt (using custom methods) if it seems broken?
+               Value is True or False -->
+      <setting name="WMIRepair" value="True" />
+          <!-- Should WMI be repaired (using in-built methods) if it seems broken?
+               Value is True or False -->
+      <setting name="ServiceRepair" value="True" />
+          <!-- Should 'any' of the services be fixed if not correctly configured?
+               When set to False:
+                 -No service will be fixed.
+                 -This overrides the AutoRepair setting specified in each listed
+                  service configuration.
+               When set to True:
+                 -A service will be fixed if it's corresponding AutoRepair setting is True.
+               Value is True or False -->
+      <setting name="ShareRepair" value="False" />
+          <!-- Should the shares be fixed if they do not exist or are not set
+               correctly?
+               Value is True or False -->
+      <setting name="EnvironmentRepair" value="True" />
+          <!-- Should the system environment get fixed if errors are found in the
+               Path, Temp, or Tmp variables?
+               Value is True or False -->
+    </operating_system>
+    
+    <operating_system name="Windows Vista">
+      <setting name="WMIRebuild" value="False"/>
+      <setting name="WMIRepair" value="True"/>
+      <setting name="ServiceRepair" value="True"/>
+      <setting name="ShareRepair" value="True"/>
+      <setting name="EnvironmentRepair" value="True"/>
+    </operating_system>
+    
+    <operating_system name="Windows 7">
+      <setting name="WMIRebuild" value="False"/>
+      <setting name="WMIRepair" value="True"/>
+      <setting name="ServiceRepair" value="True"/>
+      <setting name="ShareRepair" value="True"/>
+      <setting name="EnvironmentRepair" value="True"/>
+    </operating_system>
+    
+    <operating_system name="Windows Server 2003">
+      <setting name="WMIRebuild" value="False"/>
+      <setting name="WMIRepair" value="True"/>
+      <setting name="ServiceRepair" value="True"/>
+      <setting name="ShareRepair" value="True"/>
+      <setting name="EnvironmentRepair" value="False"/>
+    </operating_system>
+    
+    <operating_system name="Windows Server 2008">
+      <setting name="WMIRebuild" value="False"/>
+      <setting name="WMIRepair" value="False"/>
+      <setting name="ServiceRepair" value="False"/>
+      <setting name="ShareRepair" value="False"/>
+      <setting name="EnvironmentRepair" value="False"/>
+    </operating_system>
+    
+    <operating_system name="Windows 2000">
+      <setting name="WMIRebuild" value="False"/>
+      <setting name="WMIRepair" value="False"/>
+      <setting name="ServiceRepair" value="False"/>
+      <setting name="ShareRepair" value="False"/>
+      <setting name="EnvironmentRepair" value="False"/>
+    </operating_system>
+  </system_repairs>
+</configuration>

@@ -1,0 +1,3054 @@
+<?xml version="1.0" ?>
+<package>
+	<comment>
+**************************************************************************
+
+**************************************************************************
+	</comment>
+	<job id="Health Check Tool" prompt="no">
+		<?job error="true" debug="false" ?>
+		<runtime>
+			<description>
+Health Check Tool
+
+File: Health Check Tool.wsf
+
+Comments: Developed by Dan Thomson (dethomson@hotmail.com)
+          Last modified on 5/5/2014
+          
+          This script file is part of the Configuration Manager Health Check Tool
+          (http://configmgrclienthtc.codeplex.com/)
+          
+Disclaimer:   As with many freeware tools, use of this script and its associated scripts is at
+          YOUR OWN RISK.  There is NO WARRANTY implied or otherwise to the form, fitness,
+          or function of these scripts.  Prior to using these scripts, they should be thoroughly
+          evaluated and tested in a lab environment.
+
+Description: This script is to check some basic client health issues and correct some that it can.
+          It checks to make sure the system's core settings are correct and that the ConfigMgr
+          client is installed and operational.
+
+Unless otherwise noted at the procedure level, all code is copyright Dan Thomson.  You may 
+modify, use, and share this code for non-profit activities only.
+
+Note:           This script does NOT provide support for Windows 2000 systems!
+			</description>
+			<named helpstring="Turns off 'On Error Resume Next'" name="Debug" required="false" type="simple"/>
+			<named helpstring="Enables extra log output" name="LoggingIsVerbose" required="false" type="string"/>
+			<named helpstring="Causes WMI to be rebuilt after the initial system checks are performed." name="WMIRebuildNow" required="false" type="simple"/>
+			<usage>
+Any single value setting found in the Settings.xml file can be used as a command line argument so that the settings file can be over-ridden via the GPO running the script.
+			</usage>
+			<example>Examples:
+cscript "Health Check Tool.wsf" /OPTION1 OPTION2 /OPTION3:OPTIONVALUE OPTION4=OPTIONVALUE
+cscript "Health Check Tool.wsf" /Debug
+</example>
+		</runtime>
+		<object id="g_objFSO" progid="Scripting.FileSystemObject" events="false" reference="true"/>
+		<object id="g_objWshShell" progid="WScript.Shell" events="false" reference="true"/>
+		<script language="VBScript" src="clsDictionary.vbs"/>
+		<script language="VBScript" src="clsErrors.vbs"/>
+		<script language="VBScript" src="clsLogging.vbs"/>
+		<script language="VBScript" src="clsOS.vbs"/>
+		<script language="VBScript" src="clsProcess.vbs"/>
+		<script language="VBScript" src="clsRegistry.vbs"/>
+		<script language="VBScript" src="clsService.vbs"/>
+		<script language="VBScript" src="clsStatusReporting.vbs"/>
+		<script language="VBScript" src="libFileSystem.vbs"/>
+		<script language="VBScript" src="libGeneral.vbs"/>
+		<script language="VBScript" src="libWMI.vbs"/>
+		<script id="System Health Monitor" language="VBScript">
+<![CDATA[
+Option Explicit
+'On Error Resume Next
+
+'Global constants
+  Const ScriptVersion = "04.01.10"
+
+'Global variables
+  Dim g_dicSettings
+  Dim g_objError
+  Dim g_objLog
+  Dim g_objOS
+  Dim g_objProcess
+  Dim g_objReg
+  Dim g_objServiceData
+  Dim g_objStatusReport
+  Dim g_objWMIService
+  Dim strProcedure : strProcedure = "Health Check Tool.wsf"
+  
+'Validate the object reference to Wscript.Shell
+If Not IsObject(g_objWshShell) Then
+  Wscript.Echo "Error: Problem with Shell script object"
+  Wscript.Quit
+End If
+
+'Validate the object reference to Scripting.FileSystemObject
+If Not IsObject(g_objFSO) Then
+  Wscript.Echo "Error: Problem with FSO script object"
+  Wscript.Quit
+End If
+
+Set g_dicSettings = New clsDictionary
+If Not IsObject(g_dicSettings) Then
+  Wscript.Echo "Error: Problem with Dictionary script object"
+  Wscript.Quit
+End If
+
+g_dicSettings.Add "APP_Name", g_objFSO.GetBaseName(WScript.ScriptName)
+g_dicSettings.Add "ScriptVersion", ScriptVersion
+
+g_dicSettings.Key("Debug") = DoDebug()
+  
+If g_dicSettings.Key("Debug") Then On Error GoTo 0 Else 
+  
+g_dicSettings.Add "TimeStarted", Now()
+
+If StrIn(1, WScript.FullName, "CSCRIPT") > 0 Then
+  g_dicSettings.Add "IsCscript", True
+Else
+  g_dicSettings.Add "IsCscript", False
+End If
+
+If Script_Initialize() Then
+  Call Main()
+End If
+
+Call Script_Exit(0)
+
+
+'***********************************************************************
+Private Sub Main()
+  
+  If g_dicSettings.Key("Debug") Then On Error GoTo 0 Else On Error Resume Next
+  
+  Dim strProcedure : strProcedure = "Main"
+  Dim strComputerName
+'  If Not IsAdmin() Then
+'      Call LogIt("  Not running under administrative context.", strProcedure, LogTypeError)
+'      Call g_objStatusReport.Add("GEN", "Non-Admin context")
+'      Call Script_Exit(1)
+'  End If
+  
+  If g_objOS.IsServer Then
+    Call LogIt("This is a server.", strProcedure, LogTypeWarning)
+    If g_objOS.IsDC And (g_dicSettings.Key("DCs") = False) Then
+      Call LogIt("  Unapproved platform - Domain Controller", strProcedure, LogTypeError)
+      Call g_objStatusReport.Add("GEN", "UnApproved Platform - Domain Controller")
+      Call Script_Exit(1)
+    End If
+    If g_dicSettings.Key("Servers") = False Then
+      Call LogIt("  Unapproved platform - Server", strProcedure, LogTypeError)
+      Call g_objStatusReport.Add("GEN", "UnApproved Platform - Server")
+      Call Script_Exit(1)
+    End If
+  Else
+    If g_dicSettings.Key("Workstations") = False Then
+      Call LogIt("  Unapproved platform - Workstation", strProcedure, LogTypeError)
+      Call g_objStatusReport.Add("GEN", "UnApproved Platform - Workstation")
+      Call Script_Exit(1)
+    End If
+  End If
+  
+  'Get the name of the computer
+  If IsNullOrEmpty(g_objOS.Name) Then
+    Call LogIt("  Could not read ComputerName from the System environment. " & g_objError.Message, strProcedure, LogTypeError)
+    Call g_objStatusReport.Add("GEN", "Cannot read system name")
+    Call Script_Exit(1)
+  End If
+  
+  g_dicSettings.Key("SystemNameChanged") = False
+  Call g_objReg.Read(g_dicSettings.Key("RegistryStorePath") & "\ComputerName", strComputerName)
+  If Not IsNullOrEmpty(strComputerName) Then
+    If StrCompare(strComputerName, g_objOS.Name) <> 0 Then
+      Call LogIt("The " & g_dicSettings.Key("APP_Name") & " last ran on " & strComputerName & ", which is a mismatch with the current computer name.", strProcedure, LogTypeWarning)
+      g_dicSettings.Key("SystemNameChanged") = True
+      Call g_objStatusReport.Add("GEN", "System name changed")
+    End If
+  End If
+  
+  'Is the computername a proper length?
+  If Len(g_objOS.Name) > CInt(g_dicSettings.Key("SystemNameMaxLength")) Then
+    Call g_objStatusReport.Add("GEN", "System name too long")
+  End If
+  
+  'Verify the location of the WINNT or Windows folder
+  If IsNullOrEmpty(g_objOS.Dir_Win) Then
+    Call LogIt("  Could not read WinDir from the System environment. " & g_objError.Message, strProcedure, LogTypeError)
+    Call g_objStatusReport.Add("GEN", "Cannot read Windows folder location")
+    Call Script_Exit(1)
+  End If
+  
+  'Get the drive where the operating system is installed
+  If IsNullOrEmpty(g_objOS.Drv_System) Then
+    Call LogIt("  Could not read SystemDrive from the System environment. " & g_objError.Message, strProcedure, LogTypeError)
+    Call g_objStatusReport.Add("GEN", "Cannot read system drive location")
+    Call Script_Exit(1)
+  End If
+  
+  'Test for required AD info
+  '>>> Skipping for now since the Tanium client can be installed on domain
+  '>>> or workgroup systems. Interacting with AD can be taxing on DCs.
+  '>>> This isn't really needed unless we're troubleshooting something
+  '>>> that relies on or is related to AD -like an SCCM client.
+  If g_objOS.IsDomainMember Then
+    ' If IsNullOrEmpty(g_objOS.DNSDomain) Then
+    '   Call LogIt("  Could not read the system's DNS Domain.  It might not be a member of a domain.", strProcedure, LogTypeError)
+    '   Call g_objStatusReport.Add_Forced("GEN", errSYS_ProblemWithScriptObject)
+    '   Call Script_Exit(errSYS_ProblemWithScriptObject)
+    ' End If
+    ' 
+    ' If IsNullOrEmpty(g_objOS.Domain) Then
+    '   Call LogIt("  Could not read the system's Domain.  It might not be a member of a domain.", strProcedure, LogTypeError)
+    '   Call g_objStatusReport.Add_Forced("GEN", errSYS_ProblemWithScriptObject)
+    '   Call Script_Exit(errSYS_ProblemWithScriptObject)
+    ' End If
+    ' 
+    ' If IsNullOrEmpty(g_objOS.ADSite) Then
+    '   Call LogIt("  Could not read the system's AD site.  It might not be a member of a domain or is on an IP subnet that is not configured in AD Sites and Services.", strProcedure, LogTypeError)
+    '   'Don't exit.  There could be systems on a subnet that is not configured in Active Directory Sites & Services
+    '   Call g_objStatusReport.Add_Forced("GEN", errAD_NoADSite)
+    ' End If
+  End If
+  
+  'Check the drive freespace for the drive where the operating system is installed
+  If Disk_Space_Free_Check(g_objOS.Drv_System) = False Then
+    If Disk_Space_Free_Fix() = False Then
+      'could not clear space
+      Call g_objStatusReport.Add("GEN", "Failed to recover disk space")
+    Else
+      If Disk_Space_Free_Check(g_objOS.Drv_System) = False Then
+        Call g_objStatusReport.Add("GEN", "Free disk space is low")
+      Else
+        'free space was cleared
+        Call g_objStatusReport.Add("GEN", "Recovered disk space")
+      End If
+    End If
+  Else
+    'Do we want to report healthy status?
+  End If
+  
+  'For most of the remaining activities, status is reported from
+  'within the called procedures
+  
+  'Check the path, tmp, and temp environment variables
+  If Environment_CheckAndFix() = False Then
+    'The environment may be broken, but we were unable to fix it
+  End If
+  
+  Call Services_CheckAndFix()
+  
+  'Check the WMI service
+  If WMI_Check() = False Then
+    If WMI_Fix() Then
+      'fix ran ok
+    Else
+      'failed
+    End If
+  End If
+  
+  If Not g_objReg.Connect() Then
+    Call g_objStatusReport.Add("WMI", "Failed Root\Default:StdRegProv")
+    Call Script_Exit(1)
+  End If
+  
+  'Create an object reference to WMI
+  If Not ObjectRef_Get(g_objWMIService, "winmgmts:{impersonationLevel=impersonate}!\root\cimv2") Then
+    Call g_objStatusReport.Add("WMI", "Failed Root\Cimv2")
+    Call Script_Exit(1)
+  End If
+  
+  'It's good to make sure the system time is in sync with its DC
+  'Call Time_Check()
+  
+  'Check and fix the BITS service
+  Call BITS_CheckAndFix()
+  
+  'Check and fix the Windows Installer service
+  If Not MSI_Check() Then
+    If MSI_Fix() Then
+      If MSI_Check() Then
+        Call g_objStatusReport.Add("MSI", "Repaired Windows Installer")
+      End If
+    Else
+      'Call g_objStatusReport.Add("MSI", "Failed to repair Windows Installer")
+    End If
+  End If
+  
+  'Check and fix the Automatic Updates service
+  If WUA_Check() = False Then
+    'Call WUA_Fix()
+  End If
+End Sub
+
+'***********************************************************************
+Private Function BITS_CheckAndFix()
+  If g_dicSettings.Key("Debug") Then On Error GoTo 0 Else On Error Resume Next
+  
+  BITS_CheckAndFix = False
+  
+  Dim strProcedure : strProcedure = "BITS_CheckAndFix"
+  Dim blnErrorOccurred
+  
+  blnErrorOccurred = False
+  
+  g_objServiceData.Filter = "Name = 'BITS'"
+  
+  If g_objServiceData.RecordCount = 0 Then
+    blnErrorOccurred = True
+  Else
+    Call LogIt(">>>> Begin " & g_objServiceData.Fields.Item("FriendlyName") & " service checks <<<<", strProcedure, LogTypeInfo)
+    
+    If Service_CheckAndFix(g_objServiceData.Fields.Item("Name"), _
+                           g_objServiceData.Fields.Item("StartMode"), _
+                           g_objServiceData.Fields.Item("State"), _
+                           g_objServiceData.Fields.Item("LogonAccount"), _
+                           g_objServiceData.Fields.Item("SecurityDescriptor"), _
+                           g_objServiceData.Fields.Item("AutoRepair")) = False Then
+      blnErrorOccurred = True
+    End If
+  End If
+  
+  If Not blnErrorOccurred Then
+    BITS_CheckAndFix = True
+  Else
+    Call LogIt("The BITS service is not configured properly.", strProcedure, LogTypeError)
+    Call g_objStatusReport.Add("BITS", "BITS service failed checks")
+  End If
+End Function
+
+'***********************************************************************
+Private Function Disk_Space_Free_Check(ByVal strDrive)
+  If g_dicSettings.Key("Debug") Then On Error GoTo 0 Else On Error Resume Next
+  
+  Disk_Space_Free_Check = False
+  
+  Dim strProcedure : strProcedure = "Disk_Space_Free_Check"
+  Dim lngDrv_FreeSpace
+  
+  Call LogIt(">>>> Begin Disk FreeSpace Check <<<<", strProcedure, LogTypeInfo)
+  
+  'Check the drive freespace for the drive where the operating system is installed
+  If Drive_Space_Free(strDrive, lngDrv_FreeSpace) Then
+    Call LogIt("  There is " & FormatNumber(lngDrv_FreeSpace, 0) & " MB of free space on drive " & strDrive & ".", strProcedure, LogTypeInfo)
+    If lngDrv_FreeSpace < CDbl(g_dicSettings.Key("DriveMinFreespace")) Then
+      Call LogIt("  There is limited freespace on drive " & strDrive & ".", strProcedure, LogTypeError)
+    Else
+      Disk_Space_Free_Check = True
+    End If
+  End If
+  Call LogIt(">>>> Finished Disk FreeSpace Check <<<<", strProcedure, LogTypeInfo)
+End Function
+
+'***********************************************************************
+Private Function Disk_Space_Free_Fix_Modern()
+  If g_dicSettings.Key("Debug") Then On Error GoTo 0 Else On Error Resume Next
+  
+  Disk_Space_Free_Fix_Modern = False
+  
+  Dim strProcedure : strProcedure = "Disk_Space_Free_Fix_Modern"
+  
+  Call LogIt(">>>> Begin Disk Free Space Recovery <<<<", strProcedure, LogTypeInfo)
+  'dism /online /get-packages /format:table /english
+  
+  ' Deployment Image Servicing and Management tool
+  ' Version: 6.1.7600.16385
+  ' 
+  ' Image Version: 6.1.7601.18489
+  ' 
+  ' Packages listing:
+  ' 
+  ' 
+  ' ------------------------------------------------------------------------------------------------------- | ---------- | --------------- | -------------------
+  ' Package Identity                                                                                        | State      | Release Type    | Install Time       
+  ' ------------------------------------------------------------------------------------------------------- | ---------- | --------------- | -------------------
+  ' Microsoft-Windows-Client-LanguagePack-Package~31bf3856ad364e35~amd64~en-US~6.1.7601.17514               | Installed  | Language Pack   | 7/20/2015 6:29 PM  
+  ' Microsoft-Windows-Client-Refresh-LanguagePack-Package~31bf3856ad364e35~amd64~en-US~6.1.7601.17514       | Installed  | Language Pack   | 7/20/2015 6:29 PM  
+  ' Microsoft-Windows-CodecPack-Basic-Package~31bf3856ad364e35~amd64~~6.1.7601.17514                        | Installed  | Feature Pack    | 11/21/2010 3:40 AM 
+  ' Microsoft-Windows-Foundation-Package~31bf3856ad364e35~amd64~~6.1.7601.17514                             | Installed  | Foundation      | 11/21/2010 3:40 AM 
+  ' Microsoft-Windows-Identity-Foundation-Package-TopLevel~31bf3856ad364e35~amd64~~6.1.7600.16394           | Installed  | Update          | 12/3/2015 1:26 AM  
+  ' Microsoft-Windows-IE-Hyphenation-Parent-Package-English~31bf3856ad364e35~~~11.2.9412.0                  | Installed  | Update          | 12/3/2015 1:18 AM  
+  ' Microsoft-Windows-IE-Spelling-Parent-Package-English~31bf3856ad364e35~~~11.2.9412.0                     | Installed  | Update          | 12/3/2015 1:18 AM  
+  ' Microsoft-Windows-IE-Troubleshooters-Package~31bf3856ad364e35~amd64~en-US~6.1.7601.17514                | Superseded | Language Pack   | 7/20/2015 6:29 PM  
+  ' Microsoft-Windows-IE-Troubleshooters-Package~31bf3856ad364e35~amd64~~6.1.7601.17514                     | Superseded | Feature Pack    | 11/21/2010 3:40 AM 
+  
+  'dism /online /norestart /quiet /remove-package /packagename=
+  
+  Disk_Space_Free_Fix_Modern = True
+  Call LogIt(">>>> Finished Disk Free Space Recovery <<<<", strProcedure, LogTypeInfo)
+End Function
+
+'***********************************************************************
+Private Function Disk_Space_Free_Fix()
+  If g_dicSettings.Key("Debug") Then On Error GoTo 0 Else On Error Resume Next
+  
+  Disk_Space_Free_Fix = False
+  
+  Dim strProcedure : strProcedure = "Disk_Space_Free_Fix"
+  Dim objFolder
+  Dim objFile
+  Dim strFileBaseName
+  Dim strFileExtension
+  Dim strMsg
+  Dim intDateDiff
+  Dim lngSize
+  Dim lngSpace_Reclaimed
+  Dim strName
+  Dim strReg_Key
+  Dim intCount_Items_Cleaned
+  Dim lngReclaimedSpace
+  Dim arrName
+  Dim objProcess
+  
+  lngReclaimedSpace = 0
+  intCount_Items_Cleaned = 0
+  
+  Call LogIt(">>>> Begin Disk Free Space Recovery <<<<", strProcedure, LogTypeInfo)
+  
+  'Delete old patch $NTUNINSTALLKB* folders from %WinDir%
+  'Only supported for XP and Server 2003
+  'Newer operating systems store their files in the WinSxS folder
+  If g_dicSettings.Key("DeleteOldPatchFiles") And (g_objOS.Version < 6.0) Then
+    If Not IsNullOrEmpty(g_dicSettings.Key("PatchFolderMaxDays")) Then
+      strMsg = "Cleaning old patch uninstall folders from the %WinDir% folder that are " & g_dicSettings.Key("PatchFolderMaxDays") & " days old or more."
+      Call LogIt(strMsg, strProcedure, LogTypeInfo)
+      
+      For Each objFolder In g_objFSO.GetFolder(g_objOS.Dir_Win).SubFolders
+        If Left(UCase(objFolder.Name), 14) = "$NTUNINSTALLKB" Then
+          strName = objFolder.Name
+          lngSize = objFolder.Size
+          intDateDiff = CInt(DateDiff("d", objFolder.DateLastModified, Now()))
+          Call LogIt("The " & objFolder.Name & " was modified " & intDateDiff & " days ago and uses " & FormatNumber((lngSize / 1048576), 2, TristateFalse, TristateFalse, TristateTrue) & " MB of disk space.", strProcedure, LogTypeInfo)
+          If intDateDiff >= CInt(g_dicSettings.Key("PatchFolderMaxDays")) Then
+            If Folder_Delete(objFolder.Path) Then
+              lngSpace_Reclaimed = lngSpace_Reclaimed + lngSize
+              intCount_Items_Cleaned = intCount_Items_Cleaned + 1
+              
+              arrName = StrSplit(strName, "$", -1)
+              strReg_Key = "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\" & Mid(arrName(1), 12) & "\"
+              
+              Call g_objReg.Delete(strReg_Key)
+            End If
+          Else
+            Call LogIt("  Leaving the " & objFolder.Path & " folder since it is not old enough.", strProcedure, LogTypeInfo)
+          End If
+        End If
+      Next
+    End If
+  End If
+  
+  'Delete old files from %WinDir%\Temp
+  If g_dicSettings.Key("DeleteOldTempFiles") Then
+    If Not IsNullOrEmpty(g_dicSettings.Key("TempFileMaxDays")) Then
+      strMsg = "Cleaning old files from the %WinDir%\Temp folder that are " & g_dicSettings.Key("TempFileMaxDays") & " days old or more."
+      Call LogIt(strMsg, strProcedure, LogTypeInfo)
+      
+      For Each objFile In g_objFSO.GetFolder(g_objOS.Dir_Win & "\Temp").Files
+        lngSize = objFile.Size
+        intDateDiff = CInt(DateDiff("d", objFile.DateLastModified, Now()))
+        Call LogIt("  The " & objFile.Name & " was modified " & intDateDiff & " days ago and uses " & FormatNumber((lngSize / 1048576), 2, TristateFalse, TristateFalse, TristateTrue) & " MB of disk space.", strProcedure, LogTypeInfo)
+        If intDateDiff >= CInt(g_dicSettings.Key("TempFileMaxDays")) Then
+          If File_Delete(objFile.Path) Then
+            lngSpace_Reclaimed = lngSpace_Reclaimed + lngSize
+            intCount_Items_Cleaned = intCount_Items_Cleaned + 1
+          End If
+        Else
+          Call LogIt("    Leaving the " & objFile.Path & " file since it is not old enough.", strProcedure, LogTypeInfo)
+        End If
+      Next
+      
+      strMsg = "Cleaning old folders from the %WinDir%\Temp folder that are " & g_dicSettings.Key("TempFileMaxDays") & " days old or more."
+      Call LogIt(strMsg, strProcedure, LogTypeInfo)
+      
+      For Each objFolder In g_objFSO.GetFolder(g_objOS.Dir_Win & "\Temp").SubFolders
+        lngSize = objFolder.Size
+        
+        intDateDiff = CInt(DateDiff("d", objFolder.DateLastModified, Now()))
+        Call LogIt("  The " & objFolder.Name & " was modified " & intDateDiff & " days ago and uses " & FormatNumber((lngSize / 1048576), 2, TristateFalse, TristateFalse, TristateTrue) & " MB of disk space.", strProcedure, LogTypeInfo)
+        If intDateDiff >= CInt(g_dicSettings.Key("TempFileMaxDays")) Then
+          g_dicSettings.Key("FileDateLastModified") = Empty
+          
+          Call GetNewestFileDate(objFolder.Path, True)
+          
+          intDateDiff = CInt(DateDiff("d", g_dicSettings.Key("FileDateLastModified"), Now()))
+          If intDateDiff >= CInt(g_dicSettings.Key("TempFileMaxDays")) Then
+            If Folder_Delete(objFolder.Path) Then
+              lngSpace_Reclaimed = lngSpace_Reclaimed + lngSize
+              intCount_Items_Cleaned = intCount_Items_Cleaned + 1
+            End If
+          Else
+            Call LogIt("    Leaving the " & objFolder.Path & " folder since it is not old enough.", strProcedure, LogTypeInfo)
+          End If
+        Else
+          Call LogIt("    Leaving the " & objFolder.Path & " folder since it is not old enough.", strProcedure, LogTypeInfo)
+        End If
+      Next
+    End If
+  End If
+    
+  'Delete old log files and folders from %WinDir%\System32\LogFiles
+'  If g_dicSettings.Key("DeleteOldLogFiles") Then
+'     If g_objOS.IsServer Then
+'       If Not IsNullOrEmpty(g_dicSettings.Key("LogFileMaxDays")) Then
+'         strMsg = "Cleaning old log files from subfolders of the " & g_objOS.Dir_Win & "\System32\LogFiles folder that are " & g_dicSettings.Key("LogFileMaxDays") & " days old or more."
+'         Call LogIt(strMsg, strProcedure, LogTypeInfo)
+'         
+'         Set objProcess = New clsProcess
+'         If IsObject(objProcess) Then
+'           For Each objFolder In g_objFSO.GetFolder(g_objOS.Dir_Win & "\System32\LogFiles").SubFolders
+'             For Each objFile In objFolder.Files
+'               strFileBaseName = g_objFSO.GetBaseName(objFile.Name)
+'               strFileExtension = g_objFSO.GetExtensionName(objFile.Name)
+'               
+'               If DateDiff("d", objFile.DateLastModified, Now()) > CInt(g_dicSettings.Key("LogFileMaxDays")) Then
+'                 Call LogIt("  Deleting old file: " & objFile, strProcedure, LogTypeInfo)
+'                 lngSize = objFile.Size
+'                 
+'                 If File_Delete(objFile.Path) Then lngSpace_Reclaimed = lngSpace_Reclaimed + lngSize
+'               Else
+'                 If StrCompare(strFileExtension, "cab") <> 0 Then
+'                   If DateDiff("d", objFile.DateLastModified, Now()) > 2 Then
+'                     Dim strFileNameCompressed
+'                     Dim lngFileSizeCompressed
+'                     strFileNameCompressed = objFolder.Path & "\" & strFileBaseName & ".cab"
+'                     Call LogIt("  Compressing file: " & objFile, strProcedure, LogTypeInfo)
+'                     If objProcess.Run("makecab.exe " & Chr(34) & objFile.Path & Chr(34) & " " & Chr(34) & strFileNameCompressed & Chr(34), True, 0) Then
+'                       lngSize = objFile.Size
+'                       lngFileSizeCompressed = g_objFSO.GetFile(strFileNameCompressed).Size
+'                       lngSize = lngSize - lngFileSizeCompressed
+'                       If File_Delete(objFile.Path) Then lngSpace_Reclaimed = lngSpace_Reclaimed + lngSize
+'                     End If
+'                   End If
+'                 End If
+'               End If
+'             Next
+'           Next
+'           Set objProcess = Nothing
+'         End If
+'       End If
+'     End If
+'  End If
+  
+  If lngSpace_Reclaimed > 0 Then
+    strMsg = "There was " & FormatNumber((lngSpace_Reclaimed / 1048576), 2, TristateFalse, TristateFalse, TristateTrue) & " MB of disk space reclaimed."
+    Call LogIt(strMsg, strProcedure, LogTypeInfo)
+    Disk_Space_Free_Fix = True
+  End If
+  
+  Call LogIt("There were " & intCount_Items_Cleaned & " old folders and/or files cleaned.", strProcedure, LogTypeInfo)
+  Call LogIt(">>>> Finished Disk Free Space Recovery <<<<", strProcedure, LogTypeInfo)
+End Function
+
+'***********************************************************************
+Private Sub Settings_Display()
+  If g_dicSettings.Key("Debug") Then On Error GoTo 0 Else On Error Resume Next
+  
+  Dim strProcedure : strProcedure = "Settings_Display"
+  Dim dicCheck
+  Dim strKey, varItem
+  Dim arrFiltered
+  Dim strFiltered, dicReg, strKeyName, strValueName, varValue
+  
+  Call LogIt("Using settings:", strProcedure, LogTypeInfo)
+  For Each strKey in g_dicSettings.Keys
+    If (Left(strKey, 15) <> "RegistryToCheck") And (strKey <> "SupportedOperatingSystems") And (strKey <> "ValidSettings") Then
+      varItem = g_dicSettings.Item(strKey)
+      If TypeName(varItem) = "Variant()" Then varItem = Join(varItem, " ")
+      Call LogIt("  " & strKey & " = " & varItem, strProcedure, LogTypeInfo)
+    End If
+  Next
+  
+  If g_dicSettings.Key("ServiceCheck") Then
+    If g_objServiceData.RecordCount > 0 Then
+      g_objServiceData.Sort = "FriendlyName ASC"
+      Call LogIt("Check the configuration of the following services:", strProcedure, LogTypeInfo)
+      If Not g_objServiceData.BOF Then g_objServiceData.MoveFirst
+      Do While Not g_objServiceData.EOF
+        Call LogIt("  " & g_objServiceData.Fields.Item("FriendlyName"), strProcedure, LogTypeInfo)
+        
+        g_objServiceData.MoveNext
+      Loop
+    Else
+      Call LogIt("There are no services to check.", strProcedure, LogTypeInfo)
+    End If
+  End If
+  
+  If g_dicSettings.Key("RegistryCheck") Then
+    arrFiltered = g_dicSettings.Keys
+    arrFiltered = Filter(arrFiltered, "RegistryToCheck", True, vbTextCompare)
+    
+    If UBound(arrFiltered) >= 0 Then
+      Call LogIt("Check the following registry values:", strProcedure, LogTypeInfo)
+      For Each strFiltered In arrFiltered
+        Set dicReg = g_dicSettings.ListItems(strFiltered)
+        strKeyName = dicReg.Item("key")
+        strValueName = dicReg.Item("ValueName")
+        varValue = dicReg.Item("ValueExpected")
+        Call LogIt("  " & strKeyName & " has " & strValueName & " = " & varValue, strProcedure, LogTypeInfo)
+      Next
+    Else
+      Call LogIt("There are no registry values to check.", strProcedure, LogTypeInfo)
+    End If
+    Erase arrFiltered
+    Set dicReg = Nothing
+  End If
+  
+  Call LogIt("System information:", strProcedure, LogTypeInfo)
+  Call LogIt("  IsServer: " & CStr(g_objOS.IsServer), strProcedure, LogTypeInfo)
+  Call LogIt("  IsDC: " & CStr(g_objOS.IsDC), strProcedure, LogTypeInfo)
+  Call LogIt("  Is64Bit: " & CStr(g_objOS.Is64Bit), strProcedure, LogTypeInfo)
+End Sub
+
+'***********************************************************************
+Private Function Environment_CheckAndFix()
+  If g_dicSettings.Key("Debug") Then On Error GoTo 0 Else On Error Resume Next
+  
+  'Path needs to be at least:
+  ' %SystemRoot%\system32;%SystemRoot%;%SystemRoot%\System32\Wbem
+  ' and REG_MULTI_SZ
+  
+  Environment_CheckAndFix = False
+  
+  Dim strProcedure : strProcedure = "Environment_CheckAndFix"
+  Dim strKey, strValueName, strValue
+  Dim intCountRequiredPathEntriesFound
+  Dim blnHasSystem32InPath
+  Dim blnHasWinInPath
+  Dim blnHasWbemInPath
+  Dim blnPathIsOutOfOrder
+  Dim blnHasDuplicatesInPath
+  Dim blnErrorOccurred
+  Dim strPath
+  Dim arrPaths
+  Dim strDicKey
+  Dim dicPaths
+  Dim strMsg
+  Dim intCount
+  Dim i
+  Dim strCommand
+  Dim strDir_Wbem
+  Dim blnExists
+  Dim blnWriteIt
+  Dim arrTemp
+  Dim arrValueNamesToCheck
+  
+  blnExists                  = False
+  strPath                    = Empty
+  strDir_Wbem                = Empty
+  
+  blnHasWinInPath            = False
+  blnHasSystem32InPath       = False
+  blnHasWbemInPath           = False
+  blnPathIsOutOfOrder        = False
+  
+  blnErrorOccurred           = False
+  
+  strKey  = "HKLM\SOFTWARE\Microsoft\WBEM\CIMOM"
+  strValueName = "Working Directory"
+  
+  Call LogIt(">>>> Begin Environment validation <<<<", strProcedure, LogTypeInfo)
+  Call LogIt("Read the Wbem " & strValueName & " value from the registry.", strProcedure, LogTypeInfo)
+  
+  Call g_objReg.Read(strKey & "\" & strValueName, strDir_Wbem)
+  
+  If IsNullOrEmpty(strDir_Wbem) Then
+    Call LogIt("  The " & strValueName & " is empty.", strProcedure, LogTypeError)
+    
+    strDir_Wbem = g_objOS.Dir_Win & "\System32\Wbem"
+    Call LogIt("      Setting default " & strValueName & " to " & strDir_Wbem & ".", strProcedure, LogTypeWarning)
+    
+    '??? should we go ahead and write this to the registry ???
+  Else
+    strDir_Wbem = g_objWshShell.ExpandEnvironmentStrings(strDir_Wbem)
+    Call LogIt("  Current " & strValueName & ": " & strDir_Wbem, strProcedure, LogTypeInfo)
+  End If
+  
+  If g_objFSO.FolderExists(strDir_Wbem) Then
+    Call LogIt("  The " & strDir_Wbem & " folder exists.", strProcedure, LogTypeInfo)
+  Else
+    Call LogIt("  The " & strDir_Wbem & " folder does not exist.", strProcedure, LogTypeError)
+    Call g_objStatusReport.Add("ENV", "Wbem folder is missing")
+  End If
+  
+  Call LogIt("Checking the Path, Temp, and Tmp system environment variables.", strProcedure, LogTypeInfo)
+  
+  strKey  = "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
+  
+  'Define an array containing the values we want to validate.  Then loop through the array doing the checks.
+  
+  arrValueNamesToCheck = Array("Path", "Temp", "Tmp")
+  
+  For Each strValueName In arrValueNamesToCheck
+    strValue = Empty
+    blnExists = False
+    blnWriteIt = False
+    
+    If g_objReg.Read(strKey & "\" & strValueName, strValue) Then
+      blnExists = True
+    End If
+    If IsNullOrEmpty(strValue) Then
+      Call LogIt("    The " & strValueName & " is empty.", strProcedure, LogTypeError)
+      Select Case strValueName
+        Case "Path"
+          strValue = g_objOS.Dir_Win & "\System32;" & g_objOS.Dir_Win & ";" & strDir_Wbem
+          blnHasWbemInPath = False
+        Case "Temp", "Tmp"
+          strValue = g_objOS.Dir_Win & "\Temp"
+      End Select
+      Call LogIt("      Setting default " & strValueName & " to " & strValue & ".", strProcedure, LogTypeInfo)
+    Else
+      Call LogIt("    Current " & strValueName & ": " & strValue, strProcedure, LogTypeInfo)
+    End If
+    
+    If blnExists Then
+      Call LogIt("Validate the " & strValueName & " registry entry is the correct value type.", strProcedure, LogTypeInfo)
+      If Not g_objReg.TypeCheck(strKey, strValueName, "REG_EXPAND_SZ") Then
+        blnWriteIt = True
+      End If
+    Else
+      blnWriteIt = True
+    End If
+    
+    If blnWriteIt Then
+      If g_dicSettings.Key("EnvironmentRepair") Then
+        If blnExists Then
+          'Delete the registry entry since it isn't the correct type.
+          If Not g_objReg.Delete(strKey & "\" & strValueName) Then
+            blnErrorOccurred = True
+          End If
+        End If
+        
+        'Write the registry entry.
+        If Not g_objReg.Write(strKey & "\" & strValueName, strValue, "REG_EXPAND_SZ") Then
+          blnErrorOccurred = True
+        End If
+      Else
+        Call LogIt("  Cannot fix the " & strKey & "\" & strValueName & " registry entry. (EnvironmentRepair = FALSE)", strProcedure, LogTypeWarning)
+        Call g_objStatusReport.Add("ENV", "Not allowed to fix environment issues")
+      End If
+    End If
+    
+    Select Case strValueName
+      Case"Path"
+        If StrIn(1, strValue, strDir_Wbem) = 0 Then blnHasWbemInPath = False
+      Case "Temp", "Tmp"
+        If StrIn(1, strValue, ";") > 0 Then
+          arrTemp = StrSplit(strValueName, ";", -1)
+          
+          If UBound(arrTemp) > 0 Then
+            Call LogIt("  The " & strValueName & " has too many elements (" & UBound(arrTemp) + 1 & "). This setting should only have one element!", strProcedure, LogTypeError)
+            
+            If g_dicSettings.Key("EnvironmentRepair") Then
+              strValue = g_objOS.Dir_Win & "\Temp"
+              
+              'Set the registry value
+              If g_objReg.Write(strKey & "\" & strValueName, strValue, "REG_EXPAND_SZ") Then
+                Call g_objStatusReport.Add("ENV", "Environment was updated")
+              Else
+                Call g_objStatusReport.Add("ENV", "Failed to update Environment")
+              End If
+            Else
+              Call LogIt("  Cannot fix the " & strKey & "\" & strValueName & " registry entry. (EnvironmentRepair = FALSE)", strProcedure, LogTypeWarning)
+              Call g_objStatusReport.Add("ENV", "Not allowed to fix environment issues")
+            End If
+          End If
+        End If
+        
+        If g_objFSO.FolderExists(g_objWshShell.ExpandEnvironmentStrings(strValue)) Then
+          Call LogIt("  The " & strValue & " folder exists.", strProcedure, LogTypeInfo)
+        Else
+          Call LogIt("  The " & strValue & " folder does not exist.", strProcedure, LogTypeWarning)
+          Call g_objStatusReport.Add("ENV", "A Temp/Tmp folder is missing")
+        End If
+    End Select
+  Next
+  
+  '****************************************************************************
+  
+  strKey  = "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
+  strValueName = "PATH"
+  
+  Call LogIt("  Validating the Path environment variable, setting the correct search order and removing blanks and duplicates.", strProcedure, LogTypeInfo)
+  
+  Do
+    Call g_objReg.Read(strKey & "\" & strValueName, strPath)
+    
+    If IsNullOrEmpty(strPath) Then
+      Exit Do
+    End If
+    
+    If StrIn(1, strPath, ";") = 0 Then
+      Exit Do
+    End If
+    
+    arrPaths = StrSplit(strPath, ";", -1)
+    
+    Set dicPaths = New clsDictionary
+    
+    Dim blnAdd, blnDoDupeCheck
+    Dim strPaths, strPaths_Dupes
+    Dim blnIsPathDirty
+    
+    'Loop through the array of paths and remove and blanks or duplicate entries
+    blnHasDuplicatesInPath = False
+    strPaths_Dupes = Empty
+    strPaths = Empty
+    
+    For Each strPath In arrPaths
+      'Remove leading and trailing spaces
+      strPath = Trim(strPath)
+      
+      If Not IsNullOrEmpty(strPath) Then  'Don't process any blank entries
+        'Reset the value to its expanded form
+        strPath = g_objWshShell.ExpandEnvironmentStrings(strPath)
+        
+        'Check to be sure the path is not already in our list
+        If dicPaths.Exists(strPath) Then
+          Call LogIt("    The Path environment variable contains a duplicant entry (" & strPath & ").", strProcedure, LogTypeWarning)
+          blnHasDuplicatesInPath = True
+          
+          If IsNullOrEmpty(strPaths_Dupes) Then
+            strPaths_Dupes = strPath
+          Else
+            strPaths_Dupes = strPaths_Dupes & ";" & strPath
+          End If
+        Else
+          'See if the path exists
+          If g_objFSO.FolderExists(strPath) Then
+            Call LogIt("    The " & strPath & " folder exists.", strProcedure, LogTypeInfo)
+          Else
+            Call LogIt("    The " & strPath & " folder does not exist.", strProcedure, LogTypeWarning)
+            Call g_objStatusReport.Add("ENV", "A Path folder is missing")
+          End If
+          
+          'Add the path to the list
+          dicPaths.Add strPath, Empty
+          
+          If IsNullOrEmpty(strPaths) Then
+            strPaths = strPath
+          Else
+            strPaths = strPaths & ";" & strPath
+          End If
+        End If
+      End If
+    Next
+            
+    'Clear out all path entries from the dictionary list
+    dicPaths.RemoveAll
+    
+    'Let's add our default required paths first
+    dicPaths.Add g_objOS.Dir_Win & "\System32", Empty
+    
+    dicPaths.Add g_objOS.Dir_Win, Empty
+    
+    dicPaths.Add strDir_Wbem, Empty
+    
+    'Re-create the array of paths using the 'clean' path string
+    arrPaths = StrSplit(strPaths, ";", -1)
+    
+    Call LogIt("  Validating the Path environment variable contains the default required paths in the required order.", strProcedure, LogTypeInfo)
+    
+    blnIsPathDirty = False
+    intCountRequiredPathEntriesFound = 0
+    
+    'Look for required paths and verify they are in the desired order in the list
+    For i = 0 To UBound(arrPaths)
+      'Reset the value to its expanded form
+      strPath = g_objWshShell.ExpandEnvironmentStrings(arrPaths(i))
+      
+      blnAdd = True
+        
+      If StrCompare(strPath, g_objOS.Dir_Win & "\System32") = 0 Then
+        blnHasSystem32InPath = True
+        intCountRequiredPathEntriesFound = intCountRequiredPathEntriesFound + 1
+        If i <> 0 Then  'We want this path to be first in the list
+          blnPathIsOutOfOrder = True
+          Call LogIt("    The " & strPath & " path is not first in the search list.", strProcedure, LogTypeError)
+        End If
+        'We already added this as a default, so there's no need to add it again
+        blnAdd = False
+      End If
+      If StrCompare(strPath, g_objOS.Dir_Win) = 0 Then
+        blnHasWinInPath = True
+        intCountRequiredPathEntriesFound = intCountRequiredPathEntriesFound + 1
+        If i <> 1 Then  'We want this path to be second in the list
+          blnPathIsOutOfOrder = True
+          Call LogIt("    The " & strPath & " path is not second in the search list.", strProcedure, LogTypeError)
+        End If
+        'We already added this as a default, so there's no need to add it again
+        blnAdd = False
+      End If
+      If StrCompare(strPath, strDir_Wbem) = 0 Then
+        blnHasWbemInPath = True
+        intCountRequiredPathEntriesFound = intCountRequiredPathEntriesFound + 1
+        If i <> 2 Then  'We want this path to be third in the list
+          blnPathIsOutOfOrder = True
+          Call LogIt("    The " & strPath & " path is not third in the search list.", strProcedure, LogTypeError)
+        End If
+        'We already added this as a default, so there's no need to add it again
+        blnAdd = False
+      End If
+      
+      If blnAdd Then
+        dicPaths.Add strPath, strPath
+      End If
+    Next
+    
+    If (intCountRequiredPathEntriesFound = 3) And (blnPathIsOutOfOrder = False) And (blnHasDuplicatesInPath = False) Then
+      Environment_CheckAndFix = True
+      Call LogIt("  Passed Path environment check.", strProcedure, LogTypeInfo)
+      Exit Do
+    End If
+    
+    If Not blnHasSystem32InPath Then
+      Call LogIt("  The " & g_objOS.Dir_Win & "\System32 entry is missing from the Path environment variable.", strProcedure, LogTypeError)
+    End If
+    If Not blnHasWinInPath Then
+      Call LogIt("  The " & g_objOS.Dir_Win & " entry entry is missing from the Path environment variable.", strProcedure, LogTypeError)
+    End If
+    If Not blnHasWbemInPath Then
+      Call LogIt("  The " & strDir_Wbem & " entry entry is missing from the Path environment variable.", strProcedure, LogTypeError)
+    End If
+    
+    'Let's loop through the dictionary object and build the new path string
+    strPath = Empty
+    For Each strDicKey in dicPaths.Keys
+      If IsNullOrEmpty(strPath) Then
+        strPath = strDicKey
+      Else
+        strPath = strPath & ";" & strDicKey
+      End If
+    Next
+    
+    Call LogIt("  The updated Path is: " & strPath, strProcedure, LogTypeInfo)
+    
+    If g_dicSettings.Key("EnvironmentRepair") Then
+      Call LogIt("  Cannot fix the Path environment variable. (EnvironmentRepair = FALSE)", strProcedure, LogTypeWarning)
+      Call g_objStatusReport.Add("ENV", "Not allowed to fix environment issues")
+      Exit Do
+    End If
+    
+    intCount = 0
+    'Update the path setting
+    Call LogIt("  Writing the updated Path environment variable in the System environment.", strProcedure, LogTypeInfo)
+    Call EventLog_Write(EVENT_INFO, "Updating the updated Path environment variable in the System environment.  The updated Path environment variable is '" & strPath & "'.")
+    
+    g_objOS.EnvItem("SYSTEM", "Path") = strPath
+    If g_objOS.EnvItem("SYSTEM", "Path") = strPath Then
+      intCount = intCount + 1
+    End If
+    
+    Call EventLog_Write(EVENT_INFO, "Writing the updated Path to the registry.")
+    If g_objReg.Write(strKey & "\Path", strPath, "REG_EXPAND_SZ") Then
+      Call EventLog_Write(EVENT_INFO, "Wrote the updated Path environment variable to the registry with a value of " & strPath)
+      intCount = intCount + 1
+    Else
+      Call EventLog_Write(EVENT_ERROR, "Could not write the updated Path environment variable to the registry. " & g_objError.Message)
+    End If
+    
+    If intCount = 2 Then
+      Environment_CheckAndFix = True
+      Call g_objStatusReport.Add("ENV", "Environment Path was updated")
+      Call EventLog_Write(EVENT_INFO, "Successfully updated the Path environment variable.")
+      
+      If Not blnHasWbemInPath Then
+        'WMI should be restarted if the path was missing %SystemRoot%\System32\Wbem
+        Dim objSvc
+        Set objSvc = New clsService
+        If objSvc.Connect("Winmgmt") Then
+          objSvc.Restart
+        End If
+        If IsObject(objSvc) Then Set objSvc = Nothing
+      End If
+    Else
+      Call g_objStatusReport.Add("ENV", "Failed to update the Path")
+      Call EventLog_Write(EVENT_ERROR, "One or more errors ocurred while attempting to update the Path environment variable.")
+    End If
+    Exit Do
+  Loop
+  Call LogIt(">>>> Finished Environment Validation <<<<", strProcedure, LogTypeInfo)
+End Function
+
+'***********************************************************************
+Private Sub LogIt(ByVal strMsg, ByVal strComponent, ByVal intType)
+  On Error Resume Next
+  
+  If IsObject(g_objLog) Then
+    Call g_objLog.Write(strMsg, intType, strComponent)
+  Else
+    WScript.Echo strMsg
+  End If
+End Sub
+
+'***********************************************************************
+Private Function MSI_Check()
+  If g_dicSettings.Key("Debug") Then On Error GoTo 0 Else On Error Resume Next
+  
+  MSI_Check = False
+  
+  Dim strProcedure : strProcedure = "MSI_Check"
+  Dim objMSI
+  Dim objService
+  Dim blnErrorOccurred
+  Dim blnIsInstallRunning
+  Dim strValue
+  
+  blnErrorOccurred = False
+  blnIsInstallRunning = False
+  
+  Call LogIt(">>>> Begin Windows Installer service checks <<<<", strProcedure, LogTypeInfo)
+  Do
+    g_objServiceData.Filter = "Name = 'MSIServer'"
+    
+    If g_objServiceData.RecordCount = 0 Then
+      blnErrorOccurred = True
+      Exit Do
+    End If
+
+    g_objError.Clear
+    Set objService = New clsService
+    If Not IsObject(objService) Or g_objError.Check() Then
+      Call LogIt("  Failed to create an object reference to the Service class. " & g_objError.Message, strProcedure, LogTypeError)
+      blnErrorOccurred = True
+      Exit Do
+    End If
+    
+    If Not objService.Connect("MSIServer") Then
+      blnErrorOccurred = True
+      Exit Do
+    End If
+    
+    If objService.State = ADS_Svc_Running Then
+      'Check to see if an MSI based install is currently in process
+      Dim strKey, arrSubKeys, strSubKey
+      strKey = "HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Installer"
+      If g_objReg.SubKeys(strKey, arrSubKeys) Then
+        For Each strSubKey In arrSubKeys
+          If StrCompare(strSubKey, "InProgress") = 0 Then
+            Call LogIt("Skip checking the Windows Installer service since it looks like a Windows Installer based installation might be running.", strProcedure, LogTypeWarning)
+            Exit Do
+          End If
+        Next
+      End If
+    End If
+    Call LogIt("Checking Windows Installer service", strProcedure, LogTypeInfo)
+    
+    If objService.Config_CheckAndFix(g_objServiceData.Fields.Item("StartMode"), _
+                                     g_objServiceData.Fields.Item("State"), _
+                                     g_objServiceData.Fields.Item("LogonAccount"), _
+                                     g_objServiceData.Fields.Item("SecurityDescriptor"), _
+                                     g_objServiceData.Fields.Item("AutoRepair")) = False Then
+      blnErrorOccurred = True
+      Exit Do
+    End If
+    
+    If ObjectRef_Create(objMSI, "WindowsInstaller.Installer") Then
+      Call LogIt("The installed version of Windows Installer is " & objMSI.Version, strProcedure, LogTypeInfo)
+    Else
+      blnErrorOccurred = True
+    End If
+    
+    Exit Do
+  Loop
+  
+  If Not blnErrorOccurred Then
+    MSI_Check = True
+  Else
+    Call g_objStatusReport.Add("MSI", "Windows Installer failed checks")
+    Call EventLog_Write(EVENT_ERROR, "The Windows Installer service failed checks.")
+  End If
+  
+  Call LogIt(">>>> Finished checking Windows Installer service <<<<", strProcedure, LogTypeInfo)
+  
+  If IsObject(objService) Then Set objService = Nothing
+  If IsObject(objMSI) Then Set objMSI = Nothing
+End Function
+
+'***********************************************************************
+Private Function MSI_Fix()
+  If g_dicSettings.Key("Debug") Then On Error GoTo 0 Else On Error Resume Next
+  
+  MSI_Fix = False
+  
+  Dim strProcedure : strProcedure = "MSI_Fix"
+  Dim objService
+  Dim strCommand
+  Dim intReturn
+  Dim blnErrorOccurred
+  Dim blnIsInstallRunning
+  Dim strValue
+  
+  Call LogIt(">>>> Begin Windows Installer service repair <<<<", strProcedure, LogTypeInfo)
+  
+  If g_dicSettings.Exists("WasMSIRepaired") Then
+    If g_dicSettings.Key("WasMSIRepaired") Then
+      Call LogIt("The Windows Installer service has already been repaired.  Skipping repair.", strProcedure, LogTypeInfo)
+      Exit Function
+    End If
+  End If
+  
+  If Not g_dicSettings.Key("ServiceRepair") Then
+    Call LogIt("Service auto repair is not approved (ServiceRepair = FALSE).", strProcedure, LogTypeWarning)
+    Call g_objStatusReport.Add("MSI", "Windows Installer not approved for repair")
+    Exit Function
+  End If
+  
+  g_objServiceData.Filter = "Name = 'MSIServer'"
+  
+  If g_objServiceData.RecordCount <> 0 Then
+    If Not g_objServiceData.Fields.Item("AutoRepair") Then
+      Call LogIt("Windows Installer auto repair is not approved.", strProcedure, LogTypeError)
+      Call g_objStatusReport.Add("MSI", "Windows Installer not approved for repair")
+      Exit Function
+    End If
+  End If
+  
+  blnErrorOccurred = False
+  blnIsInstallRunning = False
+  
+  Do
+    g_objError.Clear
+    Set objService = New clsService
+    If Not IsObject(objService) Or g_objError.Check() Then
+      Call LogIt("  Failed to create an object reference to the Service class. " & g_objError.Message, strProcedure, LogTypeError)
+      blnErrorOccurred = True
+      Exit Do
+    End If
+    
+    If objService.Connect("MSIServer") Then
+      If objService.State = ADS_Svc_Running Then
+        'Check to see if an MSI based install is currently in process
+        If g_objReg.Read("HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Installer\InProgress\", strValue) Then
+          Call LogIt("Skip checking the Windows Installer service since it looks like a Windows Installer based installation might be running.", strProcedure, LogTypeWarning)
+          Exit Do
+        End If
+      End If
+    End If
+    
+    Call LogIt("Attempting to repair the Windows Installer service.", strProcedure, LogTypeInfo)
+    
+    If objService.IsConnected Then
+      If objService.State <> ADS_Svc_Stopped Then
+        objService.State = ADS_Svc_Stopped
+      End If
+    End If
+    
+    'Kill MSIExec.exe
+    If Not g_objProcess.Terminate("msiexec.exe") Then
+      blnErrorOccurred = True
+      Exit Do
+    Else
+      Call LogIt("Pausing 10 seconds", strProcedure, LogTypeInfo)
+      Wscript.Sleep 10000
+    End If
+    
+    'Try repair steps
+    strCommand = g_objOS.Dir_Win & "\System32\msiexec.exe /unregister"
+    Call g_objProcess.Run(strCommand, True, 0)
+    If g_objProcess.ExitCode = 0 Then
+      Call LogIt("Pausing 10 seconds", strProcedure, LogTypeInfo)
+      Wscript.Sleep 10000
+    Else
+      blnErrorOccurred = True
+    End If
+    
+    strCommand = g_objOS.Dir_Win & "\System32\regsvr32.exe /s " & g_objOS.Dir_Win & "\System32\msi.dll"
+    Call g_objProcess.Run(strCommand, True, 0)
+    If g_objProcess.ExitCode <> 0 Then blnErrorOccurred = True
+    
+    strCommand = g_objOS.Dir_Win & "\System32\regsvr32.exe /s " & g_objOS.Dir_Win & "\System32\msihnd.dll"
+    Call g_objProcess.Run(strCommand, True, 0)
+    If g_objProcess.ExitCode <> 0 Then blnErrorOccurred = True
+    
+    Call LogIt("Pausing 10 seconds", strProcedure, LogTypeInfo)
+    Wscript.Sleep 10000
+    
+    strCommand = g_objOS.Dir_Win & "\System32\msiexec.exe /regserver"
+    Call g_objProcess.Run(strCommand, False, 0)
+    'If g_objProcess.ExitCode = 0 Then
+      Call LogIt("Pausing 5 seconds", strProcedure, LogTypeInfo)
+      Wscript.Sleep 5000
+    'Else
+    '  blnErrorOccurred = True
+    'End If
+    
+    strCommand = g_objOS.Dir_Win & "\System32\msiexec.exe"
+    Call g_objProcess.Run(strCommand, False, 0)
+    If g_objProcess.ExitCode = 0 Then
+      Call LogIt("Pausing 5 seconds", strProcedure, LogTypeInfo)
+      Wscript.Sleep 5000
+    Else
+      blnErrorOccurred = True
+    End If
+    
+    Call LogIt("Pausing 30 seconds", strProcedure, LogTypeInfo)
+    Wscript.Sleep 30000
+    
+    If Not Service_Check_Exists(g_objOS.Name, "MSIServer") Then blnErrorOccurred = True
+    
+    Exit Do
+  Loop
+  
+  If Not blnErrorOccurred Then
+    Call EventLog_Write(EVENT_INFO, "A repair of the Windows Installer service was performed.")
+    Call LogIt("A repair of the Windows Installer service was performed.", strProcedure, LogTypeInfo)
+    MSI_Fix = True
+  
+    g_dicSettings.Add "WasMSIRepaired", True
+    Call g_objStatusReport.Add("MSI", "Windows Installer repair was attempted")
+  Else
+    Call EventLog_Write(EVENT_ERROR, "Failed to repair the Windows Installer service.")
+    Call LogIt("Failed to repair the Windows Installer service.", strProcedure, LogTypeError)
+    Call g_objStatusReport.Add("MSI", "Windows Installer failed repair")
+  End If
+  
+  If IsObject(objService) Then Set objService = Nothing
+  Call LogIt(">>>> Finished Windows Installer service repair <<<<", strProcedure, LogTypeInfo)
+End Function
+
+'***********************************************************************
+Sub Script_Exit(ByVal intExitCode)
+
+  If g_dicSettings.Key("Debug") Then On Error GoTo 0 Else On Error Resume Next
+
+  Dim strProcedure : strProcedure = "Script_Exit"
+  Dim intTimeElapsed
+  Dim intEventType
+  Dim blnDoReboot
+  
+  Call LogIt("Starting script exit tasks.", strProcedure, LogTypeInfo)
+  
+  If intExitCode > 0 Then
+    If IsObject(g_objStatusReport) Then Call g_objStatusReport.Add("GEN", intExitCode)
+  End If
+  
+  blnDoReboot = False
+  If g_objOS.IsRebootPending() Then
+    If g_dicSettings.Key("AutoRebootIsAllowed") Then
+      If g_objOS.CanReboot() Then
+        blnDoReboot = True
+        Call LogIt("  An automated system reboot will be attempted.", strProcedure, LogTypeWarning)
+        If IsObject(g_objStatusReport) Then Call g_objStatusReport.Add("GEN", "System restart will be attempted")
+      Else
+        If IsObject(g_objStatusReport) Then Call g_objStatusReport.Add("GEN", "System requires restart")
+      End If
+    Else
+      Call LogIt("  An automated system reboot will not be attempted because it is disabled in the settings file.", strProcedure, LogTypeInfo)
+      If IsObject(g_objStatusReport) Then Call g_objStatusReport.Add("GEN", "System requires restart")
+    End If
+  End If
+  
+  If IsObject(g_objStatusReport) Then
+    If g_objStatusReport.ReportStatus Then
+'>>>>maybe make this HasNonInfoStatus
+      If g_objStatusReport.HasStatus Then
+        If intExitCode = 0 Then intExitCode = 999
+      Else
+        'Need to report that no problems were found
+        Call g_objStatusReport.Add("GEN", "Completed Without Errors")
+        
+        Call g_objReg.Write(g_dicSettings.Key("RegistryStorePath") & "\Repairs\WMI_Date", Empty, "REG_SZ")
+        Call g_objReg.Write(g_dicSettings.Key("RegistryStorePath") & "\Repairs\WMI_Method", "None", "REG_SZ")
+      End If
+      
+      'Delete the previous status report
+      Call LogIt("Deleting the previous status log file, if it exists.", strProcedure, LogTypeInfo)
+      Call File_Delete(g_objStatusReport.File)
+    
+      Call g_objStatusReport.WriteToFile()
+    End If
+  End If
+   
+  'If intExitCode <> 0 Then
+  '  intEventType = EVENT_ERROR
+  'Else
+  '  intEventType = EVENT_SUCCESS
+  'End If
+  
+'>>>>  If IsObject(g_objStatusReport) Then Call LogIt("Status codes are: " & Join(g_objStatusReport.StatusCodes, ", "), strProcedure, LogTypeInfo)
+  
+  Call g_objReg.Write(g_dicSettings.Key("RegistryStorePath") & "\ComputerName", g_objOS.Name, REG_SZ)
+  Call g_objReg.Write(g_dicSettings.Key("RegistryStorePath") & "\LastRunTime", Now(), REG_SZ)
+  If IsObject(g_objStatusReport) Then
+'>>>>    Call g_objReg.Write(g_dicSettings.Key("RegistryStorePath") & "\LastRunErrors", Join(g_objStatusReport.StatusCodes, ", "), REG_SZ)
+  Else
+    Call g_objReg.Write(g_dicSettings.Key("RegistryStorePath") & "\LastRunErrors", Empty, REG_SZ)
+  End If
+  
+  intTimeElapsed = Datediff("s", g_dicSettings.Key("TimeStarted"), Now())
+  Call LogIt("Script completed in " & intTimeElapsed & " seconds.", strProcedure, LogTypeInfo)
+  
+  If blnDoReboot Then
+    Call g_objOS.SetPowerState(6)  'initiate a forced reboot
+  End If
+  
+  WScript.Quit(intExitCode)
+End Sub
+
+'***********************************************************************
+Private Function Script_Initialize()
+  
+  If g_dicSettings.Key("Debug") Then On Error GoTo 0 Else On Error Resume Next
+  
+  Script_Initialize = False
+  
+  Dim strProcedure : strProcedure = "Script_Initialize"
+  Dim dicSupportedOperatingSystems
+  Dim strSupportedOperatingSystem
+  Dim blnFound
+  Dim strLastRunTime
+  Dim strLastStatusCodes
+  Dim blnDoExit
+  Dim intDateDiff
+  Dim strReRunInterval
+  Dim intReRunInterval
+  
+  Set g_objLog = New clsLogging
+  If Not IsObject(g_objLog) Then
+    'Could not instantiate an object reference to the Logging class.
+    Wscript.Echo "Error: Problem with Logging script object"
+    Call Script_Exit(1)
+  End If
+  
+  Call LogIt("*******************************************************************************", strProcedure, LogTypeInfo)
+  Call LogIt("Starting " & g_dicSettings.Key("APP_Name") & ", version " & g_dicSettings.Key("ScriptVersion") & " at " & Now(), strProcedure, LogTypeInfo)
+  Call LogIt("*******************************************************************************", strProcedure, LogTypeInfo)
+  
+  Set g_objError = New clsError
+  If Not IsObject(g_objError) Then
+    Call LogIt("  Could not instantiate an object reference to the Error class.", strProcedure, LogTypeError)
+    Call Script_Exit(1)
+  End If
+  
+  g_objError.Clear
+  
+  'Create an object reference to the Registry class
+  Set g_objReg = New clsRegistry
+  If (Not IsObject(g_objReg)) Or g_objError.Check() Then
+    Call LogIt("  Could not instantiate an object reference to the Registry class. " & g_objError.Message, strProcedure, LogTypeError)
+    Call Script_Exit(1)
+  End If
+  
+  Set g_objOS = New clsOS
+  If Not IsObject(g_objOS) Or g_objError.Check() Then
+    Call LogIt("  Could not instantiate an object reference to the OS class. " & g_objError.Message, strProcedure, LogTypeError)
+    Call Script_Exit(1)
+  End If
+  
+  'Get the directory that the script is running from
+  g_dicSettings.Add "Dir_Script", g_objFSO.GetParentFolderName(WScript.ScriptFullName)
+  
+  'Get the name of the script
+  g_dicSettings.Add "File_Script", g_dicSettings.Key("APP_Name") & "." & g_objFSO.GetExtensionName(WScript.ScriptFullName)
+  
+  'Set the name of the log that tracks progress of this script
+  g_objLog.File = g_dicSettings.Key("Dir_Script") & "\" & g_dicSettings.Key("APP_Name") & ".log"
+  g_objLog.Format = "SCCM"
+  g_objLog.Component = g_dicSettings.Key("File_Script")
+  g_objLog.LoggingIncludesComponentName = True
+  
+  'Verify that the msxml3.dll file is registered properly
+  If XML_Check() = False Then
+    If XML_Fix() = True Then
+      If XML_Check() = True Then
+        'Success
+      Else
+        'Failed validation of the fix
+        Exit Function
+      End If
+    Else
+      'XML is broken. The fix failed
+      Exit Function
+    End If
+  End If
+  
+  ' Create a detached recordset to store service configuration details
+  If ObjectRef_Create(g_objServiceData, "ADOR.Recordset") Then
+    g_objError.Clear
+    With g_objServiceData.Fields
+      ' Add fields to the recordset
+      .Append "FriendlyName"        , adVarChar, 50
+      .Append "Name"                , adVarChar, 36, adFldKeyColumn
+      .Append "StartMode"           , adVarChar, 30
+      .Append "Delayed"             , adVarChar, 5
+      .Append "State"               , adVarChar, 50
+      .Append "LogonAccount"        , adVarChar, 50
+      .Append "SecurityDescriptor"  , adVarChar, adMaxCharacters
+      .Append "AutoRepair"          , adVarChar, 5
+      .Append "Order"               , adVarChar, 3
+      .Append "CheckPassed"         , adBoolean
+    End With
+    If g_objError.Check() Then
+      Call LogIt(g_objError.Message, strProcedure, LogTypeError)
+    End If
+  Else
+    Call LogIt("  Could not instantiate an object reference to 'ADOR.Recordset'. " & g_objError.Message, strProcedure, LogTypeError)
+    Call Script_Exit(1)
+  End If
+  
+  'Read in the list of valid settings and their type
+  If Not Settings_ReadDeclarations() Then
+    Call Script_Exit(1)
+  End If
+  
+  'Read base settings from the settings file
+  If Not Settings_Read(Null) Then
+    Call Script_Exit(1)
+  End If
+  
+  g_objLog.Verbose = g_dicSettings.Key("LoggingIsVerbose")
+  g_objLog.Size_Max = g_dicSettings.Key("LogSizeMax")
+  
+  If IsNullOrEmpty(g_dicSettings.Key("HealthyReRunInterval")) Then g_dicSettings.Key("HealthyReRunInterval") = "Daily"
+  If IsNullOrEmpty(g_dicSettings.Key("HealthyMinTimeBetweenReRun")) Then g_dicSettings.Key("HealthyMinTimeBetweenReRun") = 1
+  If IsNullOrEmpty(g_dicSettings.Key("UnHealthyReRunInterval")) Then g_dicSettings.Key("UnHealthyReRunInterval") = "Hourly"
+  If IsNullOrEmpty(g_dicSettings.Key("UnHealthyMinTimeBetweenReRun")) Then g_dicSettings.Key("UnHealthyMinTimeBetweenReRun") = 6
+  
+  g_objError.Clear
+  Set g_objStatusReport = New clsStatusReporting
+  If Not IsObject(g_objStatusReport) Or g_objError.Check() Then
+    Call LogIt("  Could not create an object reference to the StatusReporting class.", strProcedure, LogTypeError)
+    Call Script_Exit(1)
+  End If
+  
+  'Set the name of the status report file
+  g_objStatusReport.File = g_dicSettings.Key("Dir_Script") & "\" & g_dicSettings.Key("APP_Name") & "-status.txt"
+  
+  If Not g_dicSettings.Key("IgnoreMinTimeBetweenReRun") Then
+    blnDoExit = False
+    Do
+      Call g_objReg.Read(g_dicSettings.Key("RegistryStorePath") & "\LastRunTime", strLastRunTime)
+      If IsNullOrEmpty(strLastRunTime) Then Exit Do
+      g_dicSettings.Add "LastRunTime", strLastRunTime
+      
+      Call g_objReg.Read(g_dicSettings.Key("RegistryStorePath") & "\LastRunErrors", strLastStatusCodes)
+      If IsNullOrEmpty(strLastStatusCodes) Then Exit Do   'blnDoExit = True : 
+'>>>>>>
+      g_dicSettings.Add "LastRunErrors", strLastStatusCodes
+      
+      Call LogIt("The script last ran on " & strLastRunTime & " with the following status codes " & strLastStatusCodes & ".", strProcedure, LogTypeInfo)
+      
+      If g_dicSettings.Key("LastRunErrors") = CStr(infSuccessfulCompletion) Then
+        strReRunInterval = g_dicSettings.Key("HealthyReRunInterval")
+        intReRunInterval = g_dicSettings.Key("HealthyMinTimeBetweenReRun")
+      Else
+        strReRunInterval = g_dicSettings.Key("UnHealthyReRunInterval")
+        intReRunInterval = g_dicSettings.Key("UnHealthyMinTimeBetweenReRun")
+      End If
+      
+      Select Case UCase(strReRunInterval)
+        Case "HOURLY"  : intDateDiff = DateDiff("h", CDate(strLastRunTime), Now())
+        Case "DAILY"   : intDateDiff = DateDiff("d", CDate(strLastRunTime), Now())
+        Case "WEEKLY"  : intDateDiff = DateDiff("d", CDate(strLastRunTime), Now()) / 7
+        Case "MONTHLY" : intDateDiff = DateDiff("m", CDate(strLastRunTime), Now())
+      End Select
+      
+      If intDateDiff < CInt(intReRunInterval) Then
+        Call LogIt("  Not enough time has elapsed since the last time the script ran.", strProcedure, LogTypeWarning)
+        blnDoExit = True
+      End If
+      
+      Exit Do
+    Loop
+    If blnDoExit Then
+'>>>>>>
+      Call LogIt("Adding previous status codes to the status code list.", strProcedure, LogTypeInfo)
+      
+      Dim arrLastStatusCodes
+      Dim strLastStatusCode
+      
+      If StrIn(1, strLastStatusCodes, ",") = 0 Then
+        arrLastStatusCodes = Array(strLastStatusCodes)
+      Else
+        arrLastStatusCodes = Split(strLastStatusCodes, ",", -1)
+      End If
+      
+      For Each strLastStatusCode In arrLastStatusCodes
+        strLastStatusCode = Trim(strLastStatusCode)
+        Do
+          If StrCompare(strLastStatusCode, CStr(infSuccessfulCompletion)) = 0 Then Exit Do
+          If StrCompare(strLastStatusCode, CStr(errSYS_IsPendingRestart)) = 0 Then Exit Do
+          If StrCompare(strLastStatusCode, CStr(errSYS_FailCreateTask)) = 0 Then Exit Do
+          
+          Call g_objStatusReport.Add("GEN", CInt(strLastStatusCode))
+          
+          Exit Do
+        Loop
+      Next
+'>>>>>>      
+      Exit Function
+    End If
+  End If
+  
+'  g_dicSettings.Add "ProgramFiles", g_objOS.EnvItem("Process", "ProgramFiles")
+  
+  g_objStatusReport.ReportStatus = g_dicSettings.Key("ReportStatus")
+  If g_objStatusReport.ReportStatus Then
+    g_objStatusReport.ReportStatusError    = g_dicSettings.Key("ReportStatusError")
+    g_objStatusReport.ReportStatusInfo     = g_dicSettings.Key("ReportStatusInfo")
+    g_objStatusReport.ReportStatusHealthy  = g_dicSettings.Key("ReportStatusHealthy")
+  End If
+  
+  'Delete the previous status report
+  Call LogIt("Deleting the previous status file, if it exists.", strProcedure, LogTypeInfo)
+  Call File_Delete(g_objStatusReport.File)
+  
+  g_objError.Clear
+  Set g_objProcess = New clsProcess
+  If Not IsObject(g_objProcess) Or g_objError.Check() Then
+    Call LogIt("  Could not instantiate an object reference to the Process class. " & g_objError.Message, strProcedure, LogTypeError)
+    Call g_objStatusReport.Add("GEN", "Problem with Process script object")
+    Call Script_Exit(1)
+  End If
+  
+  blnFound = False
+  Set dicSupportedOperatingSystems = g_dicSettings.ListItems("SupportedOperatingSystems")
+  For Each strSupportedOperatingSystem In dicSupportedOperatingSystems
+    If StrIn(1, g_objOS.Caption, strSupportedOperatingSystem) > 0 Then
+      blnFound = True
+      g_dicSettings.Key("OperatingSystemName") = strSupportedOperatingSystem
+      Exit For
+    End If
+  Next
+  Set dicSupportedOperatingSystems = Nothing
+  
+  If blnFound Then
+    Call LogIt("The operating system '" & g_objOS.Caption & "' (version " & g_objOS.Version & "." & g_objOS.BuildNumber & ") is supported.", strProcedure, LogTypeInfo)
+  Else
+    Call LogIt("The operating system '" & g_objOS.Caption & "' (version " & g_objOS.Version & "." & g_objOS.BuildNumber & ") is NOT supported.", strProcedure, LogTypeError)
+    Call g_objStatusReport.Add("GEN", "Unsupported operating system")
+    
+    Exit Function
+  End If
+  
+  'Read operating speecific settings from the settings file
+  If Not Settings_Read(g_dicSettings.Key("OperatingSystemName")) Then
+    Call g_objStatusReport.Add("GEN", "Failed to read settings file")
+    Call Script_Exit(1)
+  End If
+  
+  Call g_dicSettings.Sort()
+  
+  Call Settings_Display()
+  
+  Script_Initialize = True
+End Function
+
+'***********************************************************************
+Private Sub Services_CheckAndFix()
+  If g_dicSettings.Key("Debug") Then On Error GoTo 0 Else On Error Resume Next
+  
+  Dim strProcedure : strProcedure = "Services_CheckAndFix"
+  
+  If Not g_dicSettings.Key("ServiceCheck") Then
+    Call LogIt("Skip services checks (ServiceCheck = FALSE)", strProcedure, LogTypeWarning)
+    Exit Sub
+  End If
+  
+  Do
+    'Process the services recordset
+    If g_objServiceData.RecordCount = 0 Then
+      Exit Do
+    End If
+    
+    'Sort the recordset by Order ascending
+    g_objServiceData.Sort = "Order ASC"
+    
+    'Move to the first record in the recordset
+    g_objServiceData.MoveFirst
+    
+    'Loop through the recordset and check all services with Order > 0
+    Do While Not g_objServiceData.EOF
+      If CInt(g_objServiceData.Fields.Item("Order")) <> 0 Then
+        'Check the service configuration
+        Call LogIt(">>>> Begin " & g_objServiceData.Fields.Item("FriendlyName") & " service checks <<<<", strProcedure, LogTypeInfo)
+        
+        If Service_CheckAndFix(g_objServiceData.Fields.Item("Name"), _
+                               g_objServiceData.Fields.Item("StartMode"), _
+                               g_objServiceData.Fields.Item("State"), _
+                               g_objServiceData.Fields.Item("LogonAccount"), _
+                               g_objServiceData.Fields.Item("SecurityDescriptor"), _
+                               g_objServiceData.Fields.Item("AutoRepair")) = False Then
+          
+          'Call LogIt("The " & strSvcName & " service is not configured properly.", strProcedure, LogTypeError)
+'>>>>>>
+          Call g_objStatusReport.Add("GEN", g_objServiceData.Fields.Item("Name") & " failed service configuration validation")
+'>>>>>>
+          g_objServiceData.Fields.Item("CheckPassed") = False
+        Else
+          g_objServiceData.Fields.Item("CheckPassed") = True
+        End If
+        g_objServiceData.Update
+      End If
+      'Go to the next record
+      g_objServiceData.MoveNext
+    Loop
+    
+    Exit Do
+  Loop
+  
+  '>>>>>>
+  'If g_dicSettings.Key("ServiceRepair") <> True Then
+  '  Call LogIt("Setting ServiceRepair = True to allow auto repair of BITS, Windows Installer, and WUA.", strProcedure, LogTypeWarning)
+  '  g_dicSettings.Key("ServiceRepair") = True
+  'End If
+  '>>>>>>
+End Sub
+
+'***********************************************************************
+Private Function Service_CheckAndFix(ByVal strName, _
+                                     ByVal strStartMode, _
+                                     ByVal strState, _
+                                     ByVal strLogon, _
+                                     ByVal strSecurityDescriptor, _
+                                     ByVal blnAutoRepair)
+  If g_dicSettings.Key("Debug") Then On Error GoTo 0 Else On Error Resume Next
+  
+  Service_CheckAndFix = False
+  
+  Dim strProcedure : strProcedure = "Service_CheckAndFix"
+  Dim objService
+  
+  g_objError.Clear
+  Set objService = New clsService
+  If Not IsObject(objService) Or g_objError.Check() Then
+    Call LogIt("  Failed to create an object reference to the Service class.", strProcedure, LogTypeError)
+    Call g_objStatusReport.Add("GEN", "Problem with Service script object")
+    Exit Function
+  End If
+  
+  If objService.Connect(strName) Then
+    If objService.Config_CheckAndFix(strStartMode, strState, strLogon, strSecurityDescriptor, blnAutoRepair) Then
+      Service_CheckAndFix = True
+    End If
+  End If
+  
+  If IsObject(objService) Then Set objService = Nothing
+End Function
+
+'***********************************************************************
+Private Sub Settings_ReadCommandLine()
+'***********************************************************************
+' Sub Settings_ReadCommandLine
+'
+' Purpose:  Read arguments from the command line.
+'
+' Input:
+'
+'***********************************************************************
+  If g_dicSettings.Key("Debug") Then On Error GoTo 0 Else On Error Resume Next
+  
+  Dim strProcedure : strProcedure = "Settings_ReadCommandLine"
+  Dim strArg
+  Dim strSettingName, varSettingValue, strSettingType
+  
+  'Get all arguments that were input on the command line.  These will over-ride settings read from the xml file
+  For Each strArg In WScript.Arguments
+    'If the argument was a named argument, let's switch things up so it looks like an unamed argument
+    If Left(strArg, 1) = "/" Then strArg = Mid(strArg, 2)
+    If StrIn(1, strArg, ":") > 0 Then
+      strArg = StrReplace(strArg, ":", "=", 1, 1)
+    End If
+    
+    If StrIn(1, strArg, "=") > 0 Then
+      'Let's split the argument into a name and value pair
+      strSettingName = Trim(Left(strArg, StrIn(1, strArg, "=") - 1))
+      varSettingValue = Trim(Mid(strArg, StrIn(1, strArg, "=") + 1))
+    Else
+      'The argument is a simple value.  
+      strSettingName = strArg
+      varSettingValue = Empty
+    End If
+    If Setting_Validate(strSettingName, strSettingType) Then
+      Select Case UCase(strSettingType)
+        Case "BOOLEAN"
+          'If the value is Empty and a Boolean type, we assume it to warrant a 'True' value.
+          'This is usally the case when specifying arguments such as Debug, without having to
+          'specify the value (i.e. Debug -vs- Debug=True, LoggingIsVerbose -vs- LoggingIsVerbose=True).
+          If IsNullOrEmpty(varSettingValue) Then
+            varSettingValue = True
+          Else
+            varSettingValue = TrueOrFalse(varSettingValue)
+          End If
+        Case "NUMERIC"
+          If IsNullOrEmpty(varSettingValue) Then
+            Call LogIt("The " & strSettingName & " setting is missing its value.", strProcedure, LogTypeError)
+          Else
+            varSettingValue = CDbl(varSettingValue)
+          End If
+        Case Else
+          If IsNullOrEmpty(varSettingValue) Then
+            Call LogIt("The " & strSettingName & " setting is missing its value.", strProcedure, LogTypeError)
+          Else
+            varSettingValue = CStr(varSettingValue)
+          End If
+      End Select
+      g_dicSettings.Add strSettingName, varSettingValue
+      g_dicSettings.ListItem("CommandLineSettings", strSettingName) = varSettingValue
+    Else
+      Call LogIt("The " & strSettingName & " setting is not recognized as a valid setting.", strProcedure, LogTypeError)
+    End If
+    
+    strSettingName = Empty
+    varSettingValue = Empty
+  Next
+End Sub
+
+'***********************************************************************
+Private Function Settings_ReadDeclarations()
+  If g_dicSettings.Key("Debug") Then On Error GoTo 0 Else On Error Resume Next
+  
+  Settings_ReadDeclarations = False
+  
+  Dim strProcedure : strProcedure = "Settings_ReadDeclarations"
+  Dim strFile
+  Dim objXmlDoc
+  Dim objRoot
+  Dim colNodes
+  Dim objNode
+  Dim strSettingName, strSettingType
+  
+  strFile = g_dicSettings.Key("Dir_Script") & "\SettingDeclarations.xml"
+  
+  If Not g_objFSO.FileExists(strFile) Then
+    Call LogIt("The " & strFile & " settings file seems to be missing.", strProcedure, LogTypeError)
+    Exit Function
+  End If
+  
+  Do
+    If Not ObjectRef_Create(objXmlDoc, "Microsoft.XMLDOM") Then
+      Call LogIt("Failed to create an object reference to XMLDOM.", strProcedure, LogTypeError)
+      Exit Function
+    End If
+    
+    objXmlDoc.Async = "False"
+    objXmlDoc.setProperty "SelectionLanguage", "XPath"
+    
+    objXmlDoc.Load(strFile)
+    
+    If (objXmlDoc.parseError.errorCode <> 0) Then
+      Call LogIt("Failed to load the " & strFile & " xml file. " & objXmlDoc.parseError.reason, strProcedure, LogTypeError)
+      Exit Do
+    End If
+    
+    g_objError.Clear
+    Set objRoot = objXmlDoc.SelectSingleNode("/settings")
+    If objRoot.HasChildNodes Then
+      Set colNodes = objRoot.childNodes
+      For Each objNode In colNodes
+        strSettingName = Trim(objNode.getAttribute("name"))
+        strSettingType = Trim(objNode.getAttribute("type"))
+        
+        g_dicSettings.ListItem("ValidSettings", strSettingName) = strSettingType
+      Next
+    End If
+    
+    Exit Do
+  Loop
+  
+  Settings_ReadDeclarations = True
+  
+  If IsObject(colNodes) Then Set colNodes = Nothing
+  If IsObject(objRoot) Then Set objRoot = Nothing
+  If IsObject(objXmlDoc) Then Set objXmlDoc = Nothing
+End Function
+
+'***********************************************************************
+Private Function Settings_Read(ByVal strOS)
+'***********************************************************************
+'
+' Purpose:  Read settings from the configuration xml file.
+'
+' Input:
+'
+'***********************************************************************
+  If g_dicSettings.Key("Debug") Then On Error GoTo 0 Else On Error Resume Next
+  
+  Settings_Read = False
+  
+  Dim strProcedure : strProcedure = "Settings_Read"
+  Dim objXmlDoc
+  Dim arrNodesToRead, strNodeToRead
+  Dim objAttributes, objAttribute
+  Dim strSettingName, varSettingValue, strSettingType
+  Dim colNodes, objNode
+  Dim strServiceName, strServiceConfig
+  Dim strGroupName, colMembers, objMember
+  Dim strOperatingSystemName, strVersion
+  Dim blnErrorOccurred
+  Dim blnIsLoggingQuiet
+  Dim intCountItems
+  
+  blnErrorOccurred = False
+  
+  If IsNullOrEmpty(strOS) Then
+    Call LogIt("Read base settings from the settings file.", strProcedure, LogTypeInfo)
+  Else
+    Call LogIt("Read settings from the settings file for " & strOS, strProcedure, LogTypeInfo)
+  End If
+  
+  'Use the default settings.xml if an alternate settings file was not specified.
+  If Not g_dicSettings.Exists("ConfigFile") Then
+    g_dicSettings.Add "ConfigFile", g_dicSettings.Key("Dir_Script") & "\Settings.xml"
+  End If
+  
+  Do
+    If Len(g_dicSettings.Key("ConfigFile")) = 0 Then
+      Call LogIt("There is an error with the name of the specified settings file.", strProcedure, LogTypeError)
+      blnErrorOccurred = True
+      Exit Do
+    End If
+    
+    If Not g_objFSO.FileExists(g_dicSettings.Key("ConfigFile")) Then
+      Call LogIt("The " & g_dicSettings.Key("ConfigFile") & " settings file seems to be missing.", strProcedure, LogTypeError)
+      blnErrorOccurred = True
+      Exit Do
+    End If
+    
+    'If Not ObjectRef_Create(objXmlDoc, "Microsoft.XMLDOM") Then
+    '  Call LogIt("Could not create an object reference to XMLDOM.", strProcedure, LogTypeError)
+    '  blnErrorOccurred = True
+    '  Exit Do
+    'End If
+    Set objXmlDoc = CreateObject("Microsoft.XMLDOM")
+    objXmlDoc.Async = "False"
+    objXmlDoc.setProperty "SelectionLanguage", "XPath"
+    
+    objXmlDoc.Load(g_dicSettings.Key("ConfigFile"))
+    
+    If (objXmlDoc.parseError.errorCode <> 0) Then
+      Call LogIt("Failed to load the " & g_dicSettings.Key("ConfigFile") & " xml file. " & objXmlDoc.parseError.reason, strProcedure, LogTypeError)
+      blnErrorOccurred = True
+      Exit Do
+    End If
+    
+    'Get global options
+    If IsNullOrEmpty(strOS) Then
+      'Get list of supported systems
+      Set colNodes = objXmlDoc.SelectNodes("/configuration/application_settings/SupportedOperatingSystems/SupportedOperatingSystem")
+      
+      For Each objNode In colNodes
+        strOperatingSystemName = Trim(objNode.getAttribute("name"))
+        g_dicSettings.ListItem("SupportedOperatingSystems", strOperatingSystemName) = strOperatingSystemName
+      Next
+      If IsObject(colNodes) Then Set colNodes = Nothing
+      
+      arrNodesToRead = Array("/configuration/application_settings/setting", _
+                             "/configuration/system_settings/common/setting", _
+                             "/configuration/system_repairs/common/setting")
+      
+      'Read all Option nodes listed under the paths above
+      For Each strNodeToRead In arrNodesToRead
+        Set colNodes = objXmlDoc.SelectNodes(strNodeToRead)
+        If Not IsObject(colNodes) Or g_objError.Check Then
+          Call LogIt("Failed to read " & strNodeToRead & " from the settings file. " & g_objError.Message, strProcedure, LogTypeError)
+        Else
+          For Each objNode In colNodes
+            g_objError.Clear
+            strSettingName = Trim(objNode.getAttribute("name"))
+            varSettingValue = Trim(objNode.getAttribute("value"))
+            If g_objError.Check() Then
+              Call LogIt("Failed to read ???? from the settings file. " & g_objError.Message, strProcedure, LogTypeWarning)
+              'g_dicSettings.Add("?") = Empty
+              blnErrorOccurred = True
+            Else
+              If Setting_Validate(strSettingName, strSettingType) Then
+                Select Case UCase(strSettingType)
+                  Case "BOOLEAN" : varSettingValue = CBool(TrueOrFalse(varSettingValue))
+                  Case "NUMERIC" : varSettingValue = CLng(varSettingValue)
+                  Case Else      : varSettingValue = CStr(varSettingValue)
+                End Select
+                g_dicSettings.Add strSettingName, varSettingValue
+              Else
+                Call LogIt("The " & strSettingName & " setting is not recognized as a valid setting.", strProcedure, LogTypeError)
+              End If
+            End If
+            strSettingName = Empty
+            varSettingValue = Empty
+          Next
+        End If
+        If IsObject(colNodes) Then Set colNodes = Nothing
+      Next
+    Else
+      'Get options defined for the specified operating system
+      arrNodesToRead = Array("/configuration/system_settings/operating_system[@name = '" & strOS & "']/setting", _
+                             "/configuration/system_repairs/operating_system[@name = '" & strOS & "']/setting")
+      'Read all Option nodes listed under the paths above
+      For Each strNodeToRead In arrNodesToRead
+        g_objError.Clear
+        Set colNodes = objXmlDoc.SelectNodes(strNodeToRead)
+        If (Not IsObject(colNodes)) Or g_objError.Check Then
+          Call LogIt("Failed to read settings for the " & strOS & " operating system version from the settings file. " & g_objError.Message, strProcedure, LogTypeError)
+        Else
+          For Each objNode In colNodes
+            g_objError.Clear
+            strSettingName = Trim(objNode.getAttribute("name"))
+            varSettingValue = Trim(objNode.getAttribute("value"))
+            If g_objError.Check() Then
+              Call LogIt("Failed to read ???? from the settings file. " & g_objError.Message, strProcedure, LogTypeWarning)
+              'g_dicSettings.Add("?") = Empty
+              blnErrorOccurred = True
+            Else
+              If Setting_Validate(strSettingName, strSettingType) Then
+                Select Case UCase(strSettingType)
+                  Case "BOOLEAN" : varSettingValue = TrueOrFalse(varSettingValue)
+                  Case "NUMERIC" : varSettingValue = CDbl(varSettingValue)
+                  Case Else      : varSettingValue = CStr(varSettingValue)
+                End Select
+                g_dicSettings.Add strSettingName, varSettingValue
+              Else
+                Call LogIt("The " & strSettingName & " setting is not recognized as a valid setting.", strProcedure, LogTypeError)
+              End If
+            End If
+            strSettingName = Empty
+            varSettingValue = Empty
+          Next
+          Set colNodes = Nothing
+        End If
+      Next
+      
+      'Get list of service configurations
+      arrNodesToRead = Array("/configuration/system_settings/common/services/service", _
+                             "/configuration/system_settings/operating_system[@name = '" & strOS & "']/services/service")
+      'Read all service nodes listed under the paths above
+      'Verify the recordset is open
+      If g_objServiceData.State <> adStateOpen Then
+        g_objServiceData.Open
+        
+        If g_objError.Check() Then
+          Call LogIt(g_objError.Message, strProcedure, LogTypeError)
+        Else
+          For Each strNodeToRead In arrNodesToRead
+            Set colNodes = objXmlDoc.SelectNodes(strNodeToRead)
+            For Each objNode In colNodes
+              Set objAttributes = objNode.Attributes
+              If objAttributes.length > 0 Then
+                g_objServiceData.AddNew
+                
+                For Each objAttribute In objAttributes
+                  strSettingName = objAttribute.nodeName
+                  varSettingValue = Trim(objAttribute.nodeValue)
+                  
+                  g_objServiceData(strSettingName) = varSettingValue
+                  
+                  strSettingName = Empty
+                  varSettingValue = Empty
+                Next
+                'Update the recordset
+                g_objServiceData.Update
+              End If
+              Set objAttributes = Nothing
+              
+            Next
+            Set colNodes = Nothing
+          Next
+        End If
+      End If
+      
+      'Get list of registry values to validate
+      arrNodesToRead = Array("/configuration/system_settings/common/registry/ValueCheck", _
+                             "/configuration/system_settings/operating_system[@name = '" & strOS & "']/registry/ValueCheck")
+      'Read all group nodes listed under the paths above
+      intCountItems = 1
+      For Each strNodeToRead In arrNodesToRead
+        Set colNodes = objXmlDoc.SelectNodes(strNodeToRead)
+        
+        For Each objNode In colNodes
+          Set objAttributes = objNode.Attributes
+          If objAttributes.length > 0 Then
+            For Each objAttribute In objAttributes
+              g_dicSettings.ListItem("RegistryToCheck" & StrPadLeft(CStr(intCountItems), "0", 3), _
+                                              objAttribute.nodeName) = Trim(objAttribute.nodeValue)
+            Next
+          End If
+          If IsObject(objAttributes) Then Set objAttributes = Nothing
+          intCountItems = intCountItems + 1
+        Next
+      Next
+    End If
+    Exit Do
+  Loop
+  
+  'Get settings spcified on the command line
+  Call Settings_ReadCommandLine()
+  
+  Do
+    If IsNullOrEmpty(g_dicSettings.Key("RegistryStorePath")) Then
+      g_dicSettings.Key("RegistryStorePath") = "HKEY_LOCAL_MACHINE\Software\SMS\" & g_dicSettings.Key("APP_Name")
+    Else
+      If Left(g_dicSettings.Key("RegistryStorePath"), 18) = "HKEY_LOCAL_MACHINE" Then Exit Do
+      If Left(g_dicSettings.Key("RegistryStorePath"), 4) = "HKLM" Then Exit Do
+      g_dicSettings.Key("RegistryStorePath") = "HKEY_LOCAL_MACHINE\" & g_dicSettings.Key("RegistryStorePath")
+    End If
+  Loop
+  
+  If blnErrorOccurred Then
+    Call LogIt("Failed to read one or more settings from the settings file.", strProcedure, LogTypeError)
+  Else
+    Call LogIt("Finished reading settings from the settings file.", strProcedure, LogTypeInfo)
+    Settings_Read = True
+  End If
+End Function
+
+'***********************************************************************
+Private Function Setting_Validate(ByVal strSettingName, ByRef strSettingType)
+  If g_dicSettings.Key("Debug") Then On Error GoTo 0 Else On Error Resume Next
+  
+  strSettingType = g_dicSettings.ListItem("ValidSettings", strSettingName)
+  
+  If IsNullOrEmpty(strSettingType) Then
+    Setting_Validate = False
+  Else
+    Setting_Validate = True
+  End If
+End Function
+
+'***********************************************************************
+Private Function WMI_Check()
+  If g_dicSettings.Key("Debug") Then On Error GoTo 0 Else On Error Resume Next
+  
+  WMI_Check = False
+  
+  Dim strProcedure : strProcedure = "WMI_Check"
+  Dim strCommand
+  Dim strSuccess
+  Dim strLog
+  Dim blnSuccess
+  Dim objProcess
+  Dim arrResults
+  Dim strLine
+  Dim i
+  
+  Dim blnErrorOccurred
+  
+  blnErrorOccurred = False
+  
+  g_objServiceData.Filter = "Name = 'Winmgmt'"
+  
+  If g_objServiceData.RecordCount = 0 Then
+    blnErrorOccurred = True
+  Else
+    Call LogIt(">>>> Begin " & g_objServiceData.Fields.Item("FriendlyName") & " service checks <<<<", strProcedure, LogTypeInfo)
+    
+    If Service_CheckAndFix(g_objServiceData.Fields.Item("Name"), _
+                           g_objServiceData.Fields.Item("StartMode"), _
+                           g_objServiceData.Fields.Item("State"), _
+                           g_objServiceData.Fields.Item("LogonAccount"), _
+                           g_objServiceData.Fields.Item("SecurityDescriptor"), _
+                           g_objServiceData.Fields.Item("AutoRepair")) = False Then
+      blnErrorOccurred = True
+    End If
+  End If
+  
+  If blnErrorOccurred Then
+    Call LogIt("The Winmgmt service is not configured properly.", strProcedure, LogTypeError)
+    Call g_objStatusReport.Add("WMI", "WMI failed service configuration validation")
+    
+    Call EventLog_Write(EVENT_ERROR, "The WMI service is having issues. The service is not configured correctly or failed to start.")
+    Exit Function
+  End If
+  
+  If WMI_NameSpaces_Check() = False Then
+    Call g_objStatusReport.Add("WMI", "WMI failed namespace validation")
+    Call EventLog_Write(EVENT_ERROR, "The WMI service is having issues. Could not validate one or more namespaces.")
+    blnErrorOccurred = True
+  End If
+  
+  strCommand = ""
+  strSuccess = ""
+  strLog     = ""
+  
+  Select Case g_objOS.Version
+    Case 5.1    'XP 32 bit
+      '>>>>>>
+    Case 5.2    'XP 64 bit, Server 2003 RTM & R2
+      strCommand = "" 'rundll32 wbemupgd, CheckWMISetup"
+      strLog     = "" '%windir%\System32\Wbem\Logs\Setup.log"
+    Case 6.0    'Vista, Server 2008 RTM
+      strCommand = "winmgmt /verifyrepository"
+      strSuccess = "WMI Repository is consistent"
+    Case 6.1    '7, Server 2008 R2
+      strCommand = "winmgmt /verifyrepository"
+      strSuccess = "WMI Repository is consistent"
+    Case 6.2    '8, Server 2012 RTM
+      strCommand = "winmgmt /verifyrepository"
+      strSuccess = "WMI Repository is consistent"
+    Case 6.3    '8.1, Server 2012 R2
+      strCommand = "winmgmt /verifyrepository"
+      strSuccess = "WMI Repository is consistent"
+    Case 10.0   '10, Server 2016
+      strCommand = "winmgmt /verifyrepository"
+      strSuccess = "WMI Repository is consistent"
+  End Select
+  
+  If IsNullOrEmpty(strCommand) Then
+    blnSuccess = True
+    Call LogIt("No in-built method was specified to check WMI.", strProcedure, LogTypeWarning)
+  Else
+    blnSuccess = False
+    Set objProcess = New clsProcess
+    If IsObject(objProcess) Then
+      Call objProcess.Exec(strCommand, "0")
+      If IsNullOrEmpty(strLog) Then
+        If Not IsNullOrEmpty(strSuccess) Then
+          arrResults = objProcess.Output
+          If Not IsNullOrEmpty(arrResults) Then
+            For i = 0 To UBound(arrResults)
+              strLine = Trim(arrResults(i))
+              If Not IsNullOrEmpty(strLine) Then
+                If StrIn(1, strLine, strSuccess) > 0 Then
+                  blnSuccess = True
+                End If
+              End If
+            Next
+          Else
+            'issue getting process output
+          End If
+        Else
+          'unable to process due to no success criteria
+        End If
+      Else
+        'read and process log file
+        'To do
+      End If
+    Else
+      'failed to create objProcess
+    End If
+  End If
+  If blnSuccess = False Then blnErrorOccurred = True
+  
+  If blnErrorOccurred = False Then
+    WMI_Check = True
+  End If
+  Call LogIt(">>>> Finished WMI cheks <<<<", strProcedure, LogTypeInfo)
+End Function
+
+'***********************************************************************
+Private Function WMI_Fix()
+  If g_dicSettings.Key("Debug") Then On Error GoTo 0 Else On Error Resume Next
+  
+  WMI_Fix = False
+  
+  Dim strProcedure : strProcedure = "WMI_Fix"
+  Dim strLastFixMethod
+  Dim strLastFixDate
+  
+  Call LogIt(">>>> Begin WMI repairs <<<<", strProcedure, LogTypeInfo)
+  
+  If g_objOS.IsServer Then
+    Call LogIt("This is a server.", strProcedure, LogTypeWarning)
+    If (g_dicSettings.Key("Servers") = False) Or (g_dicSettings.Key("DCs") = False) Then
+      Call g_objStatusReport.Add("WMI", "WMI rebuild skipped for server")
+      Exit Function
+    End If
+  End If
+  
+  'Get last repair method
+  Call g_objReg.Read(g_dicSettings.Key("RegistryStorePath") & "\Repairs\WMI_Method", strLastFixMethod)
+  If IsNullOrEmpty(strLastFixMethod) Then strLastFixMethod = "Unknown"
+  
+  Call LogIt("The last WMI repair method was '" & strLastFixMethod & "' on " & strLastFixDate & "'.", strProcedure, LogTypeInfo)
+  
+  If g_dicSettings.Key("WMIWasRepaired") Then
+    Call LogIt("WMI was already repaired during the running of this script.  Skipping repair process.", strProcedure, LogTypeInfo)
+    Exit Function
+  End If
+  
+  Select Case UCase(strLastFixMethod)
+    Case "REPAIR"
+      'If previous used method is Repair, we can attempt a fix by running a Rebuild
+      If g_dicSettings.Key("WMIRebuild") = False Then
+        Call g_objStatusReport.Add("WMI", "WMI not approved for repair")
+        Exit Function
+      End If
+      WMI_Fix = WMI_Rebuild()
+    Case "REBUILD"
+      'If previous used method is Rebuild, the last fix was the best we could do
+      'Call technical support....
+    Case Else
+      'If previous used method is unknown, then we've probably not run a fix on this system
+      If g_dicSettings.Key("WMIRepair") = False Then
+        Call g_objStatusReport.Add("WMI", "WMI not approved for repair")
+        Exit Function
+      End If
+      WMI_Fix = WMI_Repair()
+  End Select
+  Call LogIt(">>>> Finished WMI repairs <<<<", strProcedure, LogTypeInfo)
+End Function
+
+'***********************************************************************
+Private Function WMI_Rebuild()
+  If g_dicSettings.Key("Debug") Then On Error GoTo 0 Else On Error Resume Next
+  
+  WMI_Rebuild = False
+  
+  Dim strProcedure : strProcedure = "WMI_Rebuild"
+  Dim strCommand
+  Dim strSuccess
+  Dim strLog
+  Dim blnSuccess
+  Dim objProcess
+  Dim arrResults
+  Dim strLine
+  Dim i
+  
+  If Not g_dicSettings.Key("WMIRebuild") Then
+    Call LogIt("WMI rebuild is not approved.", strProcedure, LogTypeError)
+    Call g_objStatusReport.Add("WMI", "WMI not approved for rebuild")
+    Exit Function
+  End If
+  
+  strCommand = ""
+  strSuccess = ""
+  strLog     = ""
+  
+  Select Case g_objOS.Version
+    Case 5.1    'XP 32 bit
+      WMI_Rebuild = WMI_Rebuild_XP()
+      Exit Function
+    Case 5.2    'XP 64 bit, Server 2003 RTM & R2
+      'rundll32 wbemupgd, RepairWMISetup
+        'Unfortunately, this recreates the repository folder.
+    Case 6.0    'Vista, Server 2008 RTM
+      'strCommand = "winmgmt /resetrepository"
+      'strSuccess = ""
+    Case 6.1    '7, Server 2008 R2
+      'strCommand = "winmgmt /resetrepository"
+      'strSuccess = ""
+      WMI_Rebuild = WMI_Rebuild_Win7()
+      Exit Function
+    Case 6.2    '8, Server 2012 RTM
+    Case 6.3    '8.1, Server 2012 R2
+    Case 10.0   '10, Server 2016
+  End Select
+  
+  blnSuccess = False
+  If IsNullOrEmpty(strCommand) Then
+    Call LogIt("No in-built method was specified to rebuild WMI.", strProcedure, LogTypeWarning)
+  Else
+    Set objProcess = New clsProcess
+    If IsObject(objProcess) Then
+      Call objProcess.Exec(strCommand, "0")
+      If IsNullOrEmpty(strLog) Then
+        If Not IsNullOrEmpty(strSuccess) Then
+          arrResults = objProcess.Output
+          If Not IsNullOrEmpty(arrResults) Then
+            For i = 0 To UBound(arrResults)
+              strLine = Trim(arrResults(i))
+              If Not IsNullOrEmpty(strLine) Then
+                If StrIn(1, strLine, strSuccess) > 0 Then
+                  blnSuccess = True
+                End If
+              End If
+            Next
+          Else
+            'issue getting process output
+          End If
+        Else
+          'unable to process due to no success criteria
+        End If
+      Else
+        'read and process log file
+        'To do
+      End If
+    Else
+      'failed to create objProcess
+    End If
+  End If
+End Function
+
+'***********************************************************************
+Private Function WMI_Rebuild_XP()
+  If g_dicSettings.Key("Debug") Then On Error GoTo 0 Else On Error Resume Next
+  
+  WMI_Rebuild_XP = False
+  
+  Dim strProcedure : strProcedure = "WMI_Rebuild_XP"
+  Dim objSvc
+  Dim objFolder_WBEM
+  Dim objFile
+  Dim strFolder_Backup
+  Dim strResults
+  Dim strLastFixMethod
+  Dim strLastFixDate
+  Dim strHive, strKey, strValueName, strValue
+  Dim strRegPath
+  Dim intReturn
+  
+  If (g_objOS.Version = 5.1) Then
+    If g_objOS.ServicePack < 2 Then  'We are only supporting Windows XP SP 2 & SP 3
+      Call LogIt("WMI rebuild is not approved for this operating system service pack.", strProcedure, LogTypeError)
+      Call g_objStatusReport.Add("WMI", "WMI rebuild for XP only supports XP SP2+")
+      Exit Function
+    End If
+  Else
+    Call LogIt("WMI rebuild is not approved for this operating system version.", strProcedure, LogTypeError)
+    Call g_objStatusReport.Add("WMI", "WMI rebuild for XP only supports XP SP2+")
+    Exit Function
+  End If
+  
+  If IsNullOrEmpty(g_objOS.Dir_WBEM_Repository) Then
+    Exit Function
+  End If
+  
+  If Not g_objFSO.FolderExists(g_objOS.Dir_WBEM_Repository) Then
+    Call LogIt("  The " & g_objOS.Dir_WBEM_Repository & " folder does not exist.", strProcedure, LogTypeError)
+    Exit Function
+  End If
+  
+  Call g_objReg.Read(g_dicSettings.Key("RegistryStorePath") & "\Repairs\WMI_Method", strLastFixMethod)
+  
+  If Not IsNullOrEmpty(strLastFixMethod) Then
+    If UCase(strLastFixMethod) = "REBUILD" Then
+      Call g_objReg.Read(g_dicSettings.Key("RegistryStorePath") & "\Repairs\WMI_Date", strLastFixDate)
+      
+      If Not IsNullOrEmpty(strLastFixDate) Then
+        If DateDiff("d", CDate(strLastFixDate), Now()) < 30 Then
+          Call LogIt("  The WMI repository was rebuilt less than 30 days ago. Skipping rebuild.", strProcedure, LogTypeError)
+          Call g_objStatusReport.Add("WMI", "WMI was rebuilt less than 30 days ago")
+          Exit Function
+        Else
+          Call LogIt("  The WMI repository was last rebuilt on " & strLastFixDate & ".", strProcedure, LogTypeInfo)
+        End If
+      End If
+    End If
+  End If
+  
+  Call LogIt("  Starting to rebuild WMI.", strProcedure, LogTypeWarning)
+  Call EventLog_Write(EVENT_INFO, "Starting to rebuild WMI.")
+  
+  g_dicSettings.Add "WMIWasRepaired", True
+  
+  Call g_objReg.Write(g_dicSettings.Key("RegistryStorePath") & "\Repairs\WMI_Date", CStr(Now()), "REG_SZ")
+  Call g_objReg.Write(g_dicSettings.Key("RegistryStorePath") & "\Repairs\WMI_Method", "Rebuild", "REG_SZ")
+  
+  Call g_objProcess.Exec("winmgmt /clearadp", 0)
+  
+  Set objSvc = New clsService
+  If Not objSvc.Connect("Winmgmt") Then
+    If IsObject(objSvc) Then Set objSvc = Nothing
+    Exit Function
+  End If
+  
+  Call g_objProcess.Exec("winmgmt /unregserver", 0)
+  Call g_objProcess.Exec("winmgmt /regserver", 0)
+  Call g_objProcess.Exec("winmgmt /clearadp", 0)
+  Call g_objProcess.Exec("winmgmt /resyncperf", 0)
+  
+  'Stop the service
+  objSvc.State = ADS_Svc_Stopped
+  If objSvc.State <> ADS_Svc_Stopped Then
+    'Let WMI try to terminate itself
+    Call g_objProcess.Exec("winmgmt /kill", 0)
+    
+    Call LogIt("Pausing 10 seconds.", strProcedure, LogTypeInfo)
+    
+    WScript.Sleep (10000)
+    
+    'Make sure WMI is really not running
+    'hmmm, the executable for the service is probably buried in svchost...
+    'Call g_objProcess.Terminate("winmgmt")
+  End If
+  
+  'If the service didn't stop, start any dependant services and exit
+  objSvc.State = ADS_Svc_Stopped
+  If objSvc.State <> ADS_Svc_Stopped Then
+    Call objSvc.SetDependentSvcs(ADS_Svc_Running)
+    Set objSvc = Nothing
+    
+    Call LogIt("  Exiting WMI rebuild. The service did not stop.", strProcedure, LogTypeError)
+    Call EventLog_Write(EVENT_INFO, "Failed to rebuild WMI. The service did not stop.")
+    Call g_objStatusReport.Add("MSI", "WMI service failed to stop")
+    Exit Function
+  End If
+  
+  'This routine does rename the Repository folder
+  strFolder_Backup = g_objFSO.GetParentFolderName(g_objOS.Dir_WBEM_Repository) & "\" & g_objFSO.GetBaseName(g_objOS.Dir_WBEM_Repository) & ".old"
+  If g_objFSO.FolderExists(g_objOS.Dir_WBEM_Repository) Then
+    Call Folder_Move(g_objOS.Dir_WBEM_Repository, strFolder_Backup)
+  Else
+    Call LogIt("  The " & g_objOS.Dir_WBEM_Repository & " folder does not exist.", strProcedure, LogTypeError)
+  End If
+  
+  Call g_objProcess.Exec("regsvr32.exe /s " & Chr(34) & g_objOS.Dir_Win & "\System32\scecli.dll" & Chr(34), 0)
+  Call g_objProcess.Exec("regsvr32.exe /s " & Chr(34) & g_objOS.Dir_Win & "\System32\userenv.dll" & Chr(34), 0)
+  
+  g_objError.Clear
+  Set objFolder_WBEM = g_objFSO.GetFolder(g_objFSO.GetParentFolderName(g_objOS.Dir_WBEM_Repository))
+  If IsObject(objFolder_WBEM) Then
+    For Each objFile In objFolder_WBEM.Files
+      Select Case LCase(g_objFSO.GetExtensionName(objFile.Name))
+        Case "dll"
+          Call g_objProcess.Exec("regsvr32.exe /s " & Chr(34) & objFile.Path & Chr(34), "0, 4")
+        Case "exe"
+          If StrIn(1, "wbemcntl.exe,wbemtest.exe,mofcomp.exe", objFile.Name) = 0 Then
+            Call g_objProcess.Exec(Chr(34) & objFile.Path & Chr(34) & " /regserver", "0, 4")
+          End If
+      End Select
+    Next
+    
+    Call LogIt("Pausing 10 seconds.", strProcedure, LogTypeInfo)
+    
+    WScript.Sleep (10000)
+    
+    objSvc.State = ADS_Svc_Running
+    If objSvc.State <> ADS_Svc_Running Then
+      Set objSvc = Nothing
+      
+      Call LogIt("  Exiting WMI rebuild. The service did not start.", strProcedure, LogTypeError)
+      Call EventLog_Write(EVENT_INFO, "Failed to rebuild WMI. The service did not start.")
+      Call g_objStatusReport.Add("MSI", "WMI service failed to start")
+      Exit Function
+    End If
+    
+    Call g_objProcess.Exec("mofcomp.exe " & Chr(34) & objFolder_WBEM.Path & "\cimwin32.mof" & Chr(34), 0)
+    Call g_objProcess.Exec("mofcomp.exe " & Chr(34) & objFolder_WBEM.Path & "\cimwin32.mfl" & Chr(34), 0)
+    Call g_objProcess.Exec("mofcomp.exe " & Chr(34) & objFolder_WBEM.Path & "\rsop.mof" & Chr(34), 0)
+    Call g_objProcess.Exec("mofcomp.exe " & Chr(34) & objFolder_WBEM.Path & "\rsop.mfl" & Chr(34), 0)
+    
+    'Compile all .mof and .mfl files in the folder
+    Call MOFComp(objFolder_WBEM.Path)
+    
+    Set objFolder_WBEM = Nothing
+    
+'     If Not IsNullOrEmpty(g_dicSettings.Key("AdditionalMofFolders")) Then
+'       Dim arrMofFolders, strMofFolder
+'       If StrIn(g_dicSettings.Key("AdditionalMofFolders"), ",") = 0 Then
+'         arrMofFolders = Array(g_dicSettings.Key("AdditionalMofFolders"))
+'       Else
+'         arrMofFolders = StrSplit(g_dicSettings.Key("AdditionalMofFolders"), ",", -1)
+'       End If
+'       For Each strMofFolder In arrMofFolders
+'         strMofFolder = Trim(strMofFolder)
+'         If Not IsNullOrEmpty(strMofFolder) Then
+'           strMofFolder = ReplaceEnvVars(strMofFolder)
+'           
+'           Call MOFComp(strMofFolder)
+'           
+'         End If
+'       Next
+'     End If
+    'If Not IsNullOrEmpty(g_dicSettings.Key("AdditionalMofFiles")) Then
+    '  Dim arrMofFiles, strMofFile
+    '  If StrIn(g_dicSettings.Key("AdditionalMofFiles"), ",") = 0 Then
+    '    arrMofFiles = Array(g_dicSettings.Key("AdditionalMofFiles"))
+    '  Else
+    '    arrMofFiles = StrSplit(g_dicSettings.Key("AdditionalMofFiles"), ",", -1)
+    '  End If
+    '  For Each strMofFile In arrMofFiles
+    '    strMofFile = Trim(strMofFolder)
+    '    If Not IsNullOrEmpty(strMofFile) Then
+    '      strMofFolder = ReplaceEnvVars(strMofFile)
+    '      
+    '      Call MOFComp(strMofFile)
+    '      
+    '    End If
+    '  Next
+    'End If
+    
+    Call LogIt("  Pausing 60 seconds.", strProcedure, LogTypeInfo)
+    Wscript.Sleep 60000
+  End If
+  
+  Call objSvc.SetDependentSvcs(ADS_Svc_Running)
+  
+  If IsObject(objSvc) Then Set objSvc = Nothing
+  
+  Call LogIt("  Successfully initiated a WMI rebuild.", strProcedure, LogTypeWarning)
+  Call EventLog_Write(EVENT_INFO, "WMI rebuild completed.")
+
+  Call g_objStatusReport.RemoveStatusTypes("WMI")
+  Call g_objStatusReport.Add("WMI", "WMI rebuild completed")
+  
+  g_dicSettings.Key("WMIWasRepaired") = True
+  
+  WMI_Rebuild_XP = True
+  
+  Call LogIt("Pausing 2 minutes.", strProcedure, LogTypeInfo)
+  Wscript.Sleep 120000
+  
+  'Re-create an object reference to WMI
+  If Not ObjectRef_Get(g_objWMIService, "winmgmts:{impersonationLevel=impersonate}!\root\cimv2") Then
+    Call g_objStatusReport.Add("WMI", "Failed Root\Cimv2")
+  End If
+  If Not g_objReg.Connect() Then
+    Call g_objStatusReport.Add("WMI", "Failed Root\Default:StdRegProv")
+  End If
+End Function
+
+'***********************************************************************
+Private Function WMI_Rebuild_Win7()
+  If g_dicSettings.Key("Debug") Then On Error GoTo 0 Else On Error Resume Next
+  
+  WMI_Rebuild_Win7 = False
+  
+  Dim strProcedure : strProcedure = "WMI_Rebuild_Win7"
+  Dim objSvc
+  Dim objFolder_WBEM
+  Dim objFile
+  Dim strFolder_WBEM
+  Dim strFolder_Backup
+  Dim strLocale
+  Dim strResults
+  Dim strLastFixMethod
+  Dim strLastFixDate
+  Dim strHive, strKey, strValueName, strValue
+  Dim strRegPath
+  Dim intReturn
+  
+  If g_objOS.Version <> 6.1 Then
+    Call LogIt("WMI rebuild is not approved for this operating system version.", strProcedure, LogTypeError)
+    Call g_objStatusReport.Add("WMI", "WMI rebuild only supports Win7")
+    Exit Function
+  End If
+  If g_objOS.IsServer = True Then
+    Call LogIt("WMI rebuild is not approved for this operating system version.", strProcedure, LogTypeError)
+    Call g_objStatusReport.Add("WMI", "WMI rebuild only supports workstations")
+    Exit Function
+  End If
+  
+  If IsNullOrEmpty(g_objOS.Dir_WBEM_Repository) Then
+    Exit Function
+  End If
+  
+  If Not g_objFSO.FolderExists(g_objOS.Dir_WBEM_Repository) Then
+    Call LogIt("  The " & g_objOS.Dir_WBEM_Repository & " folder does not exist.", strProcedure, LogTypeError)
+    Exit Function
+  End If
+  
+  Call g_objReg.Read(g_dicSettings.Key("RegistryStorePath") & "\Repairs\WMI_Method", strLastFixMethod)
+  
+  If Not IsNullOrEmpty(strLastFixMethod) Then
+    If UCase(strLastFixMethod) = "REBUILD" Then
+      Call g_objReg.Read(g_dicSettings.Key("RegistryStorePath") & "\Repairs\WMI_Date", strLastFixDate)
+      
+      If Not IsNullOrEmpty(strLastFixDate) Then
+        If DateDiff("d", CDate(strLastFixDate), Now()) < 30 Then
+          Call LogIt("  The WMI repository was rebuilt less than 30 days ago. Skipping rebuild.", strProcedure, LogTypeError)
+          Call g_objStatusReport.Add("WMI", "WMI was rebuilt less than 30 days ago")
+          Exit Function
+        Else
+          Call LogIt("  The WMI repository was last rebuilt on " & strLastFixDate & ".", strProcedure, LogTypeInfo)
+        End If
+      End If
+    End If
+  End If
+  
+  Call LogIt("  Starting to rebuild WMI.", strProcedure, LogTypeWarning)
+  Call EventLog_Write(EVENT_INFO, "Starting to rebuild WMI.")
+  
+  Call g_objReg.Write(g_dicSettings.Key("RegistryStorePath") & "\Repairs\WMI_Date", CStr(Now()), "REG_SZ")
+  Call g_objReg.Write(g_dicSettings.Key("RegistryStorePath") & "\Repairs\WMI_Method", "Rebuild", "REG_SZ")
+  
+  Set objSvc = New clsService
+  If Not objSvc.Connect("Winmgmt") Then
+    If IsObject(objSvc) Then Set objSvc = Nothing
+    Exit Function
+  End If
+  
+  Call g_objProcess.Exec("winmgmt /resyncperf", 0)
+  
+  'Stop the service
+  objSvc.State = ADS_Svc_Stopped
+  
+  'If the service didn't stop, start any dependant services and exit
+  If objSvc.State <> ADS_Svc_Stopped Then
+    Call objSvc.SetDependentSvcs(ADS_Svc_Running)
+    Set objSvc = Nothing
+    
+    Call LogIt("  Exiting WMI rebuild. The service did not stop.", strProcedure, LogTypeError)
+    Call EventLog_Write(EVENT_INFO, "Failed to rebuild WMI. The service did not stop.")
+    Call g_objStatusReport.Add("MSI", "WMI service failed to stop")
+    Exit Function
+  End If
+  
+  'This routine does rename the Repository folder
+  'strFolder_Backup = g_objFSO.GetParentFolderName(g_objOS.Dir_WBEM_Repository) & "\" & g_objFSO.GetBaseName(g_objOS.Dir_WBEM_Repository) & ".old"
+  'If g_objFSO.FolderExists(g_objOS.Dir_WBEM_Repository) Then
+  '  Call Folder_Move(g_objOS.Dir_WBEM_Repository, strFolder_Backup)
+  'Else
+  '  Call LogIt("  The " & g_objOS.Dir_WBEM_Repository & " folder does not exist.", strProcedure, LogTypeError)
+  'End If
+  
+  Call g_objProcess.Exec("regsvr32.exe /s " & Chr(34) & g_objOS.Dir_Win & "\System32\scecli.dll" & Chr(34), 0)
+  Call g_objProcess.Exec("regsvr32.exe /s " & Chr(34) & g_objOS.Dir_Win & "\System32\userenv.dll" & Chr(34), 0)
+  
+  strFolder_WBEM = g_objFSO.GetParentFolderName(g_objOS.Dir_WBEM_Repository)
+  If IsNullOrEmpty(strFolder_WBEM) Then
+    Call LogIt("  Could not get the Wbem folder path.", strProcedure, LogTypeError)
+    Exit Function
+  End If
+  
+  Call g_objProcess.Exec("mofcomp.exe " & Chr(34) & strFolder_WBEM & "\cimwin32.mof" & Chr(34), 0)
+  Call g_objProcess.Exec("mofcomp.exe " & Chr(34) & strFolder_WBEM & "\cimwin32.mfl" & Chr(34), 0)
+  Call g_objProcess.Exec("mofcomp.exe " & Chr(34) & strFolder_WBEM & "\rsop.mof" & Chr(34), 0)
+  Call g_objProcess.Exec("mofcomp.exe " & Chr(34) & strFolder_WBEM & "\rsop.mfl" & Chr(34), 0)
+  
+  Set objFolder_WBEM = g_objFSO.GetFolder(strFolder_WBEM)
+  If Not IsObject(objFolder_WBEM) Then
+    Call LogIt("  Could not create an object reference to the Wbem folder.", strProcedure, LogTypeError)
+    Exit Function
+  End If
+  
+  For Each objFile In objFolder_WBEM.Files
+    Select Case LCase(g_objFSO.GetExtensionName(objFile.Name))
+      Case "dll"
+        Call g_objProcess.Exec("regsvr32.exe /s " & Chr(34) & objFile.Path & Chr(34), "0, 4, 5")
+      Case "exe"
+        If StrIn(1, "wbemtest.exe,winmgmt.exe,wmic.exe,mofcomp.exe", objFile.Name) = 0 Then
+          Call g_objProcess.Exec(Chr(34) & objFile.Path & Chr(34) & " /regserver", "0, 4, 5")
+        End If
+    End Select
+  Next
+  
+  Set objFolder_WBEM = Nothing
+  
+  'Compile all .mof and .mfl files in the Wbem folder
+  Call MOFComp(strFolder_WBEM)
+  
+  'Compile language specific files, default to us-en (english) of there's an
+  'issue determining the system's locale or the locale's folder is missing.
+  strLocale = g_objOS.Locale
+  If IsNullOrEmpty(strLocale) Then
+    Call MOFComp(strFolder_WBEM & "\en-us")
+  Else
+    If g_objFSO.FolderExists(strFolder_WBEM & "\" & strLocale) Then
+      Call MOFComp(strFolder_WBEM & "\" & strLocale)
+    Else
+      Call MOFComp(strFolder_WBEM & "\en-us")
+    End If
+  End If
+  
+  Call LogIt("Pausing 50 seconds.", strProcedure, LogTypeInfo)
+  
+  WScript.Sleep (50000)
+  
+  objSvc.State = ADS_Svc_Running
+  If objSvc.State <> ADS_Svc_Running Then
+    Set objSvc = Nothing
+    
+    Call LogIt("  Exiting WMI rebuild. The service did not start.", strProcedure, LogTypeError)
+    Call EventLog_Write(EVENT_INFO, "Failed to rebuild WMI. The service did not start.")
+    Call g_objStatusReport.Add("MSI", "WMI service failed to start")
+    Exit Function
+  Else
+    Set objSvc = Nothing
+  End If
+  
+  Call LogIt("  Pausing 10 seconds.", strProcedure, LogTypeInfo)
+  Wscript.Sleep 10000
+  
+  Call LogIt("  Successfully initiated a WMI rebuild.", strProcedure, LogTypeWarning)
+  Call EventLog_Write(EVENT_INFO, "WMI rebuild completed.")
+
+  Call g_objStatusReport.RemoveStatusTypes("WMI")
+  Call g_objStatusReport.Add("WMI", "WMI rebuild completed")
+  
+  g_dicSettings.Key("WMIWasRepaired") = True
+  
+  WMI_Rebuild_Win7 = True
+  
+  Call LogIt("Pausing 10 seconds.", strProcedure, LogTypeInfo)
+  Wscript.Sleep 10000
+  
+  'Re-create an object reference to WMI
+  If Not ObjectRef_Get(g_objWMIService, "winmgmts:{impersonationLevel=impersonate}!\root\cimv2") Then
+    Call g_objStatusReport.Add("WMI", "Failed Root\Cimv2")
+  End If
+  If Not g_objReg.Connect() Then
+    Call g_objStatusReport.Add("WMI", "Failed Root\Default:StdRegProv")
+  End If
+End Function
+
+'***********************************************************************
+Private Function WMI_Repair()
+  If g_dicSettings.Key("Debug") Then On Error GoTo 0 Else On Error Resume Next
+  
+  WMI_Repair = False
+  
+  Dim strProcedure : strProcedure = "WMI_Repair"
+  Dim strLastRepairDate
+  Dim dblValueType
+  Dim intReturn
+  Dim strCommand
+  
+  If Not g_dicSettings.Key("WMIRepair") Then
+    Call LogIt("WMI repair is not approved.", strProcedure, LogTypeError)
+    Call g_objStatusReport.Add("WMI",  "WMI not approved for repair")
+    Exit Function
+  End If
+  
+  Select Case g_objOS.Version
+    Case 5.1  'XP 32 bit
+      If g_objOS.ServicePack < 2 Then  'We are only supporting Windows XP SP 2 or above.
+        Call LogIt("WMI repair is not approved for this operating system service pack.", strProcedure, LogTypeError)
+        Call g_objStatusReport.Add("WMI", "WMI repair for XP only supports XP SP2+")
+        Exit Function
+      Else
+        strCommand = "rundll32.exe wbemupgd, UpgradeRepository"
+        'Call g_objProcess.Exec("rundll32.exe setupapi,InstallHinfSection WBEM 132 %WinDir%\Inf\Wbemoc.inf", 0)
+      End If
+    Case 5.2  'XP 64 bit/ Server 2003 RTM & R2
+      strCommand = "rundll32.exe wbemupgd, RepairWMISetup"
+      'Unfortunately, this method recreates the repository folder.
+      Call LogIt("  This WMI repair method (" & strCommand & ") has not been tested on this operating system. Skipping repair.", strProcedure, LogTypeWarning)
+      Exit Function
+    Case 6.0  'Vista, Server 2008 RTM
+      strCommand = "winmgmt.exe /salvagerepository"
+      If g_objOS.IsServer Then
+        Call LogIt("  This WMI repair method (" & strCommand & ") has not been tested on this operating system. Skipping repair.", strProcedure, LogTypeWarning)
+        Exit Function
+      End If
+    Case 6.1  '7, Server 2008 R2
+      strCommand = "winmgmt.exe /salvagerepository"
+      'result message should be 'WMI repository is consistent'
+      If g_objOS.IsServer Then
+        Call LogIt("  This WMI repair method (" & strCommand & ") has not been tested on this operating system. Skipping repair.", strProcedure, LogTypeWarning)
+        Exit Function
+      End If
+    Case 6.2  '8, Server 2012 RTM
+      strCommand = "winmgmt.exe /salvagerepository"
+    Case 6.3  '8.1, Server 2012 R2
+      strCommand = "winmgmt.exe /salvagerepository"
+    Case 10.0  '10, Server 2016
+      strCommand = "winmgmt.exe /salvagerepository"
+  End Select
+  
+  If IsNullOrEmpty(strCommand) Then
+    Call LogIt("WMI repair is not supported for this operating system.", strProcedure, LogTypeError)
+    Call g_objStatusReport.Add("WMI", "WMI repair not supported for this operating system")
+    Exit Function
+  End If
+  
+  Call g_objReg.Read(g_dicSettings.Key("RegistryStorePath") & "\Repairs\WMI_Date", strLastRepairDate)
+  If Not IsNullOrEmpty(strLastRepairDate) Then
+    If DateDiff("d", CDate(strLastRepairDate), Now()) < 4 Then
+      Call LogIt("  The WMI repository was repaired less than 4 days ago. Skipping repair.", strProcedure, LogTypeWarning)
+      Call g_objStatusReport.Add("WMI", "WMI was repaired less than 4 days ago")
+      Exit Function
+    Else
+      Call LogIt("  The WMI repository was last repaired on " & strLastRepairDate & ".", strProcedure, LogTypeInfo)
+    End If
+  End If
+  
+  Call LogIt("  Initiating a WMI repair.", strProcedure, LogTypeWarning)
+  Call EventLog_Write(EVENT_INFO, "Initiating a WMI repair.")
+  
+  Call g_objProcess.Exec(strCommand, 0)
+  
+  Call LogIt("  Successfully initiated a WMI repair.", strProcedure, LogTypeWarning)
+  Call EventLog_Write(EVENT_INFO, "Successfully initiated a WMI repair.")
+  
+  Call g_objStatusReport.RemoveStatusTypes("WMI")
+  Call g_objStatusReport.Add("WMI", "WMI repair completed")
+  
+  g_dicSettings.Add "WMIWasRepaired", True
+  
+  'Re-create an object reference to WMI
+  If Not ObjectRef_Get(g_objWMIService, "winmgmts:{impersonationLevel=impersonate}!\root\cimv2") Then
+    Call g_objStatusReport.Add("WMI", "Failed Root\Cimv2")
+  End If
+  If Not g_objReg.Connect() Then
+    Call g_objStatusReport.Add("WMI", "Failed Root\Default:StdRegProv")
+  End If
+  
+  Call g_objReg.Write(g_dicSettings.Key("RegistryStorePath") & "\Repairs\WMI_Method", "Repair", "REG_SZ")
+  Call g_objReg.Write(g_dicSettings.Key("RegistryStorePath") & "\Repairs\WMI_Date", CStr(Now()), "REG_SZ")
+  
+  WMI_Repair = True
+End Function
+
+'***********************************************************************
+Private Function WMI_NameSpaces_Check()
+  If g_dicSettings.Key("Debug") Then On Error GoTo 0 Else On Error Resume Next
+  
+  'Checks the WMI namespaces in the array
+  'If any fail, return False
+  
+  WMI_NameSpaces_Check = False
+  
+  Dim strProcedure : strProcedure = "WMI_NameSpaces_Check"
+  Dim objWMI
+  Dim blnSuccess
+  Dim arrNameSpaces, strNameSpace
+  
+  blnSuccess = True
+  
+  Call LogIt(">>>> Begin WMI namespaces checks <<<<", strProcedure, LogTypeInfo)
+  
+  arrNameSpaces = Array("root\default:StdRegProv", _
+                        "root\cimv2")
+  
+  For Each strNameSpace In arrNameSpaces
+    'Call LogIt("  Trying to connect to " & strNameSpace, strProcedure, LogTypeInfo)
+    If Not ObjectRef_Get(objWMI, "winmgmts:{impersonationLevel=impersonate}!\" & strNameSpace) Then
+      blnSuccess = False
+      Exit For
+    Else
+      Set objWMI = Nothing
+    End If
+  Next
+  
+  If blnSuccess Then
+    Call LogIt("  Successfully checked the WMI namespaces.", strProcedure, LogTypeInfo)
+  Else
+    Call LogIt("  Failed to check one or more WMI namespaces.", strProcedure, LogTypeError)
+  End If
+  
+  WMI_NameSpaces_Check = blnSuccess
+  Call LogIt(">>>> Finished WMI namespaces checks <<<<", strProcedure, LogTypeInfo)
+End Function
+
+'***********************************************************************
+Private Function WUA_Check()
+  
+  If g_dicSettings.Key("Debug") Then On Error GoTo 0 Else On Error Resume Next
+  
+  WUA_Check = False
+  
+  Dim strProcedure : strProcedure = "WUA_Check"
+  Dim objService
+  Dim objAgentInfo
+  Dim intErrorCount
+  Dim intReturn
+  
+  intErrorCount = 0
+  
+  g_objServiceData.Filter = "Name = 'WUAUSERV'"
+  
+  If g_objServiceData.RecordCount = 0 Then
+    intErrorCount = intErrorCount + 1
+  Else
+    Call LogIt(">>>> Begin " & g_objServiceData.Fields.Item("FriendlyName") & " service checks <<<<", strProcedure, LogTypeInfo)
+    
+    If Service_CheckAndFix(g_objServiceData.Fields.Item("Name"), _
+                           g_objServiceData.Fields.Item("StartMode"), _
+                           g_objServiceData.Fields.Item("State"), _
+                           g_objServiceData.Fields.Item("LogonAccount"), _
+                           g_objServiceData.Fields.Item("SecurityDescriptor"), _
+                           g_objServiceData.Fields.Item("AutoRepair")) = False Then
+      intErrorCount = intErrorCount + 1
+    End If
+  End If
+  
+  ' See if the version is sufficient
+  If ObjectRef_Create(objAgentInfo, "Microsoft.Update.AgentInfo") Then
+    Call LogIt("  Found Windows Update Agent " & objAgentInfo.GetInfo("ProductVersionString") & " version " & objAgentInfo.GetInfo("ApiMajorVersion"), strProcedure, LogTypeInfo)
+    
+    ' Version check not fully implemented
+  Else
+    intErrorCount = intErrorCount + 1
+  End If
+  
+  If WUA_Check_Log() = False Then
+    Call LogIt("The Automatic Updates service is not operating properly.", strProcedure, LogTypeError)
+    Call g_objStatusReport.Add("WUA", "Windows Update Agent failed validation")
+    intErrorCount = intErrorCount + 1
+  End If
+  If intErrorCount = 0 Then
+    WUA_Check = True
+    Call g_objStatusReport.RemoveStatusTypes("WUA")
+  End If
+  
+  If IsObject(objAgentInfo) Then Set objAgentInfo = Nothing
+  Call LogIt(">>>> Finished WUA checks <<<<", strProcedure, LogTypeInfo)
+End Function
+
+'***********************************************************************
+Private Function WUA_Check_Log()
+  If g_dicSettings.Key("Debug") Then On Error GoTo 0 Else On Error Resume Next
+
+  WUA_Check_Log = False
+  
+  Dim strProcedure : strProcedure = "WUA_Check_Log"
+  Dim strFile
+  Dim strLine
+  Dim blnIsOk
+  Dim blnIssueKnown
+  Dim objFile
+  Dim arrLines()
+  Dim i, l
+  Dim intLineCount
+  Dim intLinesToSkip
+  Dim strLineBad
+  
+  blnIsOk = False
+  blnIssueKnown = False
+  
+  Call LogIt(">>>> Begin WUA log checks <<<<", strProcedure, LogTypeInfo)
+  
+  strFile = g_objOS.Dir_Win & "\WindowsUpdate.log"
+  
+  Call LogIt("Checking the " & strFile & ".", strProcedure, LogTypeInfo)
+  
+  If Not g_objFSO.FileExists(strFile) Then
+    Call LogIt("  Could not find the '" & strFile & "' file.", strProcedure, LogTypeError)
+    Exit Function
+  End If
+  
+  If Not TextFile_Open(objFile, strFile, ForReading) Then
+    Exit Function
+  End If
+   
+  intLineCount = 0
+  Do While objFile.AtEndOfStream <> True
+    strLine = objFile.ReadLine
+    intLineCount = intLineCount + 1
+  Loop
+  objFile.Close
+   
+  If Not TextFile_Open(objFile, strFile, ForReading) Then
+    Exit Function
+  End If
+   
+  If (intLineCount - 200) >= 50 Then
+    intLinesToSkip = intLineCount - 200
+  Else
+    intLinesToSkip = 0
+  End If
+  i = 0
+  Do While i < intLinesToSkip
+    objFile.SkipLine()
+    i = i + 1
+  Loop
+  
+  i = 0
+  Do While objFile.AtEndOfStream <> True
+    ReDim Preserve arrLines(i)
+    arrLines(i) = objFile.ReadLine
+    i = i + 1
+  Loop
+  objFile.Close
+  Set objFile = Nothing
+  
+  'Good entries
+  Dim arrEntriesGood
+  Dim arrEntriesBad
+  Dim strEntry
+  
+  arrEntriesGood = Array("Updates found =", _
+                         "successfully detected", _
+                         "updates detected")
+  
+  'Bad entries
+  arrEntriesBad = Array("FATAL: InstallUpdatedBinaries failed with error", _
+                        "WARNING: Setup failed while processing file operations", _
+                        "WARNING: failed to verify signature for offline cab", _
+                        "WARNING: Operation failed due to earlier error", _
+                        "WARNING: WU client failed Searching for update with error", _
+                        "FATAL: Unable to perform synchronous search", _
+                        "WARNING: ISusInternal::OpenOfflineSyncSource failed", _
+                        "AU is not configured yet")
+  
+  For l = Ubound(arrLines) to LBound(arrLines) Step -1
+    strLine = arrLines(l)
+    
+    'Good entries
+    For Each strEntry in arrEntriesGood
+      If StrIn(1, strLine, strEntry) > 0 Then
+        blnIsOk = True
+        blnIssueKnown = False
+        strLineBad = Empty
+        Exit For
+      End If
+    Next
+    
+    'Bad entries
+    For Each strEntry in arrEntriesBad
+      If StrIn(1, strLine, strEntry) > 0 Then
+        blnIsOk = False
+        blnIssueKnown = True
+        strLineBad = strLine
+        Exit For
+      End If
+    Next
+  Next
+  Erase arrLines
+  
+  If blnIsOk Then
+    Call LogIt("  No known problems where found in the '" & strFile & "' file.", strProcedure, LogTypeInfo)
+  Else
+    If blnIssueKnown Then
+      Call LogIt("  Found a known problem listed in the '" & strFile & "' file.", strProcedure, LogTypeError)
+      Call LogIt("  >>>> " & strLineBad, strProcedure, LogTypeError)
+    Else
+      Call LogIt("  Could not find any indicators of WUA operating successfully '" & strFile & "' file.", strProcedure, LogTypeError)
+    End If
+  End If
+  
+  WUA_Check_Log = blnIsOk
+  Call LogIt(">>>> Finished WUA log checks <<<<", strProcedure, LogTypeInfo)
+End Function
+
+'***********************************************************************
+Private Function XML_Check()
+  If g_dicSettings.Key("Debug") Then On Error GoTo 0 Else On Error Resume Next
+  
+  XML_Check = False
+  
+  Dim strProcedure : strProcedure = "XML_Check"
+  Dim objXML
+  
+  Call LogIt(">>>> Begin XML checks <<<<", strProcedure, LogTypeInfo)
+  
+  'Should also check Microsoft.XMLDOM
+  
+  If Not ObjectRef_Create(objXML, "MSXML2.DOMDocument") Then
+    Call LogIt("  It looks like the MSXML3.dll file needs to be registered.", strProcedure, LogTypeWarning)
+    Call g_objStatusReport.Add("XML", "XML failed validation")
+  End If
+  
+  If IsObject(objXML) Then
+    Call LogIt("  Passed MSXML3.dll check.", strProcedure, LogTypeInfo)
+    XML_Check = True
+    Set objXML = Nothing
+  End If
+  Call LogIt(">>>> Finished XML checks <<<<", strProcedure, LogTypeInfo)
+End Function
+
+'***********************************************************************
+Private Function XML_Fix()
+
+  If g_dicSettings.Key("Debug") Then On Error GoTo 0 Else On Error Resume Next
+  
+  XML_Fix = False
+  
+  Dim strProcedure : strProcedure = "XML_Fix"
+  Dim objFile
+  Dim blnErrorOccurred
+  Dim intReturn
+  
+  Call LogIt(">>>> Begin MSXML repair <<<<", strProcedure, LogTypeInfo)
+  
+  blnErrorOccurred = False
+  
+  For Each objFile in g_objFSO.GetFolder(g_objWshShell.ExpandEnvironmentStrings("%SystemRoot%\System32")).Files
+    If UCase(Left(objFile.Name, 5)) = "MSXML" Then
+      intReturn = g_objWshShell.Run("regsvr32.exe /s " & objFile.Path, 0, True)
+      If StrIn(1, "0,4", intReturn) = 0 Then
+        Call LogIt("  Failed to register file " & objFile.Name & ". Process exit code: " & intReturn, strProcedure, LogTypeError)
+        blnErrorOccurred = True
+      End If
+    End If
+  Next
+  
+  If blnErrorOccurred Then
+    Call LogIt("  Failed to run repairs for MSXML.", strProcedure, LogTypeError)
+    Call EventLog_Write(EVENT_ERROR, "Failed to run repairs for MSXML.")
+    
+    Call g_objStatusReport.Add("XML", "XML failed repair")
+  Else
+    Call EventLog_Write(EVENT_INFO, "Successfully ran repairs for MSXML.")
+    Call LogIt("  Successfully ran repairs for MSXML", strProcedure, LogTypeInfo)
+    
+    XML_Fix = True
+    
+    Call g_objStatusReport.RemoveStatusTypes("XML")
+    Call g_objStatusReport.Add("XML", "XML repair completed")
+  End If
+  Call LogIt(">>>> Finished MSXML repair <<<<", strProcedure, LogTypeInfo)
+End Function
+]]>
+		</script>
+	</job>
+</package>
